@@ -1,0 +1,33 @@
+Rho Viewer Portable - Third-party notices
+==========================================
+
+1. KartRider-File-Reader / KartLibrary
+---------------------------------------
+
+Source: https://github.com/xpoi5010/Kartrider-File-Reader
+License: GNU General Public License, version 3 (GPL-3.0)
+Local source directory:
+third_party/Kartrider-File-Reader/
+
+Rho Viewer Portable uses the local KartLibrary source as the Rho archive
+decoding backend. In particular, the local file
+third_party/Kartrider-File-Reader/src/KartriderLibrary/Encrypt/RhoKey.cs
+contains the RhoKey vector table used by the decoder. The released program
+does not fetch this file from GitHub at runtime.
+
+The KSV summary view calls the upstream KartRecord/KSVInfo structures. The
+OGG and FLAC metadata summaries in this application are local, lightweight
+container readers layered on top of the decoded resource bytes; they do not
+copy an external audio decoder.
+
+The full GPL-3.0 text is included in LICENSE. The source package also keeps
+the upstream LICENSE file beside the local KartLibrary source.
+
+2. Acknowledgements / 感謝名單
+------------------------------
+
+- 黑黑de臉蛋：「臉蛋看看(RhoDump)」：提供原始程式脈絡與研究樣本來源。
+- xpoi5010/Kartrider-File-Reader：提供公開 Rho／Rho5 格式研究與 C# 解碼實作參考。
+
+The original 「臉蛋看看(RhoDump)」 executable, archive, and user-provided game samples
+are not redistributed in this package.

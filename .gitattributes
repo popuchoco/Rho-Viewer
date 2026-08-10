@@ -1,0 +1,12 @@
+* text=auto eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.rho binary
+*.rar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary

@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.pdb
+Config/
+logs/
+publish/
+Players/
+*.rho
+*.rar
+*.zip
