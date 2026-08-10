@@ -12,6 +12,8 @@ internal sealed class AppSettings
     };
 
     public string RhoDirectory { get; set; } = string.Empty;
+    public string GameDirectory { get; set; } = string.Empty;
+    public string GameRegion { get; set; } = "auto";
     public string LogDirectory { get; set; } = string.Empty;
     public int WindowWidth { get; set; } = 1120;
     public int WindowHeight { get; set; } = 720;
@@ -48,6 +50,12 @@ internal sealed class AppSettings
     public void Normalize()
     {
         RhoDirectory = NormalizeDirectory(RhoDirectory);
+        GameDirectory = NormalizeDirectory(GameDirectory);
+        GameRegion = GameRegion?.Trim().ToLowerInvariant() switch
+        {
+            "tw" or "kr" or "cn" => GameRegion.Trim().ToLowerInvariant(),
+            _ => "auto"
+        };
         LogDirectory = NormalizeDirectory(LogDirectory);
         WindowWidth = Math.Clamp(WindowWidth, 900, 3200);
         WindowHeight = Math.Clamp(WindowHeight, 600, 2400);

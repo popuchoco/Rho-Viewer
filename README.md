@@ -1,14 +1,14 @@
 # Rho Viewer Portable
 
-Rho Viewer Portable is a Windows x64 WinForms desktop tool for reading, searching, analyzing, previewing, and exporting KartRider `.rho` archives.
+Rho Viewer Portable is a Windows x64 WinForms desktop tool for reading, searching, analyzing, previewing, exporting, and safely updating KartRider `.rho` game resources.
 
-This project is a functional reconstruction based on the behavior of an older user-provided tool and publicly available Rho format research. It is not a restoration of the original source code of `臉蛋看看(RhoDump)`, and it does not redistribute the original EXE, RAR archive, or game data.
+This project is a functional reconstruction based on the behavior of an older user-provided tool and publicly available Rho format research. It is not a restoration of the original source code of `黑黑de臉蛋 (RhoDump)`, and it does not redistribute the original executable, archive, or game data.
 
 Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operated by Nexon, any game developer, publisher, distributor, local agent, platform, or other rights holder.
 
 ## Current version
 
-`0.1.4` — framework-dependent `win-x64` portable release.
+`0.2.0` — framework-dependent `win-x64` portable release.
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 8 Desktop Runtime for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -16,7 +16,7 @@ The Portable ZIP intentionally does not include the .NET Runtime. Install Micros
 
 Use of game data may be subject to applicable local laws and regulations, as well as user agreements, terms of service, licenses, or EULA restrictions imposed by the game developer, publisher, distributor, local agent, platform, or other rights holder. You must comply with all applicable legal and contractual restrictions in your jurisdiction.
 
-This tool does not grant permission to access, extract, analyze, modify, reproduce, redistribute, publish, or otherwise use any game data. You are solely responsible for confirming that your use of the tool and the data is authorized and lawful. To the maximum extent permitted by applicable law, the authors and contributors assume no legal responsibility or liability for your use of this tool, any breach of law or contract, or any resulting claim, loss, damage, or dispute. This notice is not legal advice.
+This tool does not grant permission to access, extract, analyze, modify, reproduce, redistribute, publish, update, or otherwise use any game data. You are solely responsible for confirming that your use of the tool and the data is authorized and lawful. To the maximum extent permitted by applicable law, the authors and contributors assume no legal responsibility or liability for your use of this tool, any breach of law or contract, or any resulting claim, loss, damage, or dispute. This notice is not legal advice.
 
 ## Features
 
@@ -27,7 +27,7 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Drag a directory or `.rho` files into the window.
 - Display archive name, resource path, type, size, and protection method.
 - Show loaded archives and the internal folder tree on the left, with a breadcrumb and resource list on the right.
-- Preserve the original archive order for the resource list and folder tree; manual sorting is intentionally not provided so the original data order remains traceable.
+- Preserve the original archive order for the resource list and folder tree; manual sorting is intentionally not provided.
 - Filter by file name, path, or extension.
 - Support Select All, Invert Selection, and the `Ctrl+F`, `Ctrl+A`, `Ctrl+I`, `Ctrl+E`, and `Esc` shortcuts.
 
@@ -45,29 +45,52 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Export selected resources or all resources into subdirectories named after the source Rho archive.
 - Provide export progress, cancellation, and failed-item reporting.
 - Extract OGG, FLAC, WAV, and MP3 resources into a temporary directory before handing them to an external player.
-- Prefer `Players\vlc.exe`, `Players\mpv.exe`, or `Players\ffplay.exe` in the Portable directory; if none is found, use the Windows default file association.
-- Allow playback to be stopped and attempt to clean up temporary files created by the application.
+- Prefer `Players\\vlc.exe`, `Players\\mpv.exe`, or `Players\\ffplay.exe` in the Portable directory; if none is found, use the Windows default file association.
 - Do not bundle a third-party audio codec or player. Users must obtain players from lawful sources and comply with their licenses.
+
+### Game file update
+
+The **Update Game Files** screen is designed for a user who only wants to select the game directory:
+
+1. Select the directory containing `KartRider.pin`.
+2. Select `Auto (from KartRider.pin)`, `Taiwan (TW)`, `Korea (KR)`, or `China (CN)`. The selected region maps to the patch server host and port used for discovery.
+3. The application reads the local pin information and contacts the mapped patch service.
+4. It reads the KartRider `NFO200` file list and compares local files using the Kart-specific CRC.
+5. It shows a preview of missing or mismatched files and the estimated download size.
+6. After explicit confirmation, full compressed files are downloaded to a staging directory, decompressed, CRC-checked, and then applied.
+
+Before replacing an existing file, the updater moves the original into this relative backup path:
+
+```text
+<selected game directory>\\.RhoViewerUpdate\\backups\\<yyyyMMdd_HHmmss>\\<original relative path>
+```
+
+For example, a file originally located at `Data\\aaa.pk` is backed up under the timestamped backup directory as `Data\\aaa.pk`. The completed backup path is shown in the update status area. The updater attempts rollback if applying a batch fails, rejects absolute paths and parent traversal, and writes only below the selected game directory. It does not update the Rho Viewer executable, alter the registry, or execute a downloaded program.
+
+The first implementation intentionally uses full-file updates only. It does not invoke `Patcher.exe` or apply delta patches. The patch service must still be available for the selected region; a historical or discontinued service may be unreachable and is not replaced by this application.
+
+The update workflow is informed by the public [`brownsugar/kart-patcher`](https://github.com/brownsugar/kart-patcher) project. That project provides client-side patcher research and implementation references; it does not redistribute copyrighted game update files.
 
 ### Interface and settings
 
-- Use a fixed light theme. A dark-mode switch is intentionally not provided because native WinForms controls can produce inconsistent contrast, selection colors, drop-downs, and scrollbars across themes.
+- Use a fixed light theme for predictable native WinForms contrast.
 - Use PerMonitorV2 high-DPI support.
 - Resize the left and right layout with the window while preserving the splitter ratio and usable minimum widths.
-- Save the normal window size and splitter ratio when the application closes normally, then restore them at the next launch.
-- Use Settings to specify the default Rho directory and Log directory. Import Settings Directory can directly load the configured Rho directory.
+- Save the normal window size and splitter ratio when the application closes normally.
+- Use Settings to specify the default Rho directory and Log directory.
+- The game update screen remembers the last selected game directory in the local configuration file.
 
 ## Quick start
 
 ### Use the release package
 
 1. Install Microsoft .NET 8 Desktop Runtime for Windows x64.
-2. Extract `RhoViewerPortable_v0.1.4_win-x64.zip`.
+2. Extract the portable ZIP from the GitHub Release page.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
-5. On first use, open Settings to specify the frequently used Rho and Log directories.
+5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
 
-The release package is framework-dependent. The application does not download the Runtime, RhoKey, players, or sample data from GitHub, another website, or a remote service.
+The release package is framework-dependent. The application does not download the Runtime, RhoKey, players, sample data, or a copy of the game from GitHub or another website.
 
 ### Use the source package
 
@@ -82,6 +105,8 @@ RhoViewerPortable-Source/
 ├── RhoViewerPortable/
 │   ├── RhoViewerPortable.csproj
 │   ├── MainForm.cs
+│   ├── GameUpdateForm.cs
+│   ├── KartPatchService.cs
 │   ├── Program.cs
 │   ├── RhoReaderCore.cs
 │   ├── ResourceAnalyzers.cs
@@ -99,27 +124,29 @@ RhoViewerPortable-Source/
 
 - Windows x64.
 - Microsoft .NET 8 Desktop Runtime for Windows x64.
-- To play OGG or FLAC, a compatible player must already be installed or a lawfully obtained player must be placed in the `Players` directory.
+- To play OGG or FLAC, a compatible player must already be installed or lawfully obtained and placed in the `Players` directory.
 
 ### Building the source package
 
 - A Windows x64 development environment.
 - .NET 8 SDK and Windows Desktop SDK.
-- The first build requires NuGet package restore. After restore is complete, application execution and offline self-tests do not require network access.
+- The first build requires NuGet package restore. After restore is complete, offline Rho parsing self-tests do not require network access.
 
 ## Configuration and logs
 
 Configuration file:
 
 ```text
-Config\RhoViewerPortable.json
+Config\\RhoViewerPortable.json
 ```
 
-The configuration file is stored below the application directory. Main fields are:
+Main fields are:
 
 ```json
 {
   "rhoDirectory": "D:\\Game\\Rho",
+  "gameDirectory": "D:\\Game\\KartRider",
+  "gameRegion": "auto",
   "logDirectory": "D:\\RhoViewerLogs",
   "windowWidth": 1120,
   "windowHeight": 720,
@@ -127,28 +154,30 @@ The configuration file is stored below the application directory. Main fields ar
 }
 ```
 
-- `rhoDirectory`: the default starting directory for Select Directory and the source used by Import Settings Directory.
+- `rhoDirectory`: the default starting directory for Rho browsing and Import Settings Directory.
+- `gameDirectory`: the last directory selected by the game update screen. It is only a convenience default; the user must still review the path before checking or applying an update.
+- `gameRegion`: `auto`, `tw`, `kr`, or `cn`. `auto` uses the host and port stored in `KartRider.pin`; a selected region uses the corresponding public mapping.
 - `logDirectory`: the directory for daily logs.
 - `windowWidth` and `windowHeight`: the normal window size used at the next launch.
 - `splitterRatio`: the width ratio of the left archive/folder area relative to the main content area.
 
-Log files use the `RhoViewerPortable_yyyyMMdd.log` naming format and UTF-8 encoding. They record startup, loading, filtering, exporting, playback, cleanup, settings, and errors. If the configured Log directory is not writable, the application falls back to a system temporary directory and does not prevent startup because of a logging failure.
+Log files use the `RhoViewerPortable_yyyyMMdd.log` naming format and UTF-8 encoding. They record startup, loading, filtering, exporting, playback, update checks, update failures, settings, and cleanup. If the configured Log directory is not writable, the application falls back to a system temporary directory and does not prevent startup because of a logging failure.
 
 ## Build and publish
 
 Run the following commands from the source package root:
 
 ```powershell
-dotnet restore RhoViewerPortable\RhoViewerPortable.csproj
-dotnet build RhoViewerPortable\RhoViewerPortable.csproj -c Release --no-restore -p:NoWarn=NU1903
-dotnet publish RhoViewerPortable\RhoViewerPortable.csproj `
+dotnet restore RhoViewerPortable\\RhoViewerPortable.csproj
+dotnet build RhoViewerPortable\\RhoViewerPortable.csproj -c Release --no-restore -p:NoWarn=NU1903
+dotnet publish RhoViewerPortable\\RhoViewerPortable.csproj `
   -c Release `
   -r win-x64 `
   --self-contained false `
   -p:PublishSingleFile=false `
   -p:DebugType=none `
   -p:DebugSymbols=false `
-  -o publish\win-x64
+  -o publish\\win-x64
 ```
 
 `--self-contained false` is intentional: the release package does not carry the .NET Runtime. `PublishSingleFile=false` keeps the application DLL, dependency files, and runtimeconfig visible for troubleshooting and for confirming a framework-dependent deployment.
@@ -157,23 +186,15 @@ dotnet publish RhoViewerPortable\RhoViewerPortable.csproj `
 
 ```powershell
 RhoViewerPortable.exe --format-self-test
+RhoViewerPortable.exe --kart-crc-self-test
 RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho
 RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
-- `--format-self-test`: tests synthetic FLAC, an invalid OGG header, and the KSV fallback path.
-- `--self-test`: reads the specified Rho files and verifies the archive layer, image signatures, audio extraction, and audio analyzers.
+- `--format-self-test`: tests synthetic FLAC, invalid OGG handling, and the KSV fallback path.
+- `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
+- `--self-test`: reads specified Rho files and verifies archive, image, audio extraction, and analyzer behavior.
 - `--smoke-load`: creates the WinForms main window, loads the specified Rho, and closes automatically to detect startup or loading crashes.
-
-Baseline sample results for this release:
-
-| Sample | Result |
-|---|---|
-| `sound_bgm_desert.rho` | Rho 1.1; 5 OGG resources; the first audio resource extracts and passes the `OggS` check |
-| `stage_battleReady.rho` | Rho 1.1; 94 resources; image signature check passes |
-| `character_tiera.rho` | Rho 1.1; 116 resources; image signature check passes |
-| `track_park_R01.rho` | Rho 1.1; 6 resources; image signature check passes |
-| `sound_bgm_.rho` | Rho 1.1; 0 resources; displayed as a valid empty archive |
 
 ## Architecture overview
 
@@ -186,6 +207,13 @@ MainForm (WinForms UI)
 │   ├── KSV summary
 │   ├── OGG Vorbis / Opus metadata
 │   └── FLAC metadata
+├── GameUpdateForm
+│   └── KartPatchService
+│       ├── KartRider.pin parser
+│       ├── patch socket discovery
+│       ├── NFO200 manifest parser
+│       ├── Kart CRC verification
+│       └── staged download, backup, and rollback
 └── External playback bridge
     ├── portable Players folder
     └── Windows file association fallback
@@ -197,18 +225,21 @@ The RhoKey table is stored locally at `third_party/Kartrider-File-Reader/src/Kar
 
 - Source Rho archives are opened for reading; the tool does not write back to or repack the source archive.
 - Resources inside a Rho archive are not executed as programs. An external player only receives an extracted temporary audio file after the user starts playback.
-- Export paths are restricted to the output directory selected by the user to prevent resource path traversal.
-- The source and Portable packages do not include user Rho files, images, audio, original EXEs, RAR archives, or user configuration data.
-- No API key, private token, or remote download URL is written into the execution flow.
+- Export paths and game update paths are restricted to their respective user-selected directories.
+- Update downloads are staged and CRC-checked before replacement; original files are backed up before they are moved.
+- The updater does not execute `Patcher.exe`, install a service, modify the registry, or update the Rho Viewer executable.
+- The source and Portable packages do not include user Rho files, images, audio, original executables, RAR archives, or user configuration data.
+- No API key or private token is required or written into the execution flow.
 
 ## Known limitations
 
 - The current implementation provides metadata analysis and an external-player bridge; it is not an embedded OGG or FLAC codec.
-- Playback progress and volume controls are not provided. Stop only controls an external player for which the application can obtain a process handle.
+- Playback progress and volume controls are not provided.
 - Rho archives are not modified or repacked.
 - KSV fields and text encoding may vary by game version and require more fixtures for cross-version validation.
-- The true OEP, IAT repair, and inner code-level restoration of the original `臉蛋看看(RhoDump)` executable still require an isolated VM. This project does not claim to restore its original source code.
-- Actual audio playback depends on the user's installed player and codecs. The release package does not include a specific player or guarantee a particular listening result.
+- Game update availability depends on the region's patch service and the selected installation's `KartRider.pin`. The updater currently supports full-file NFO200 updates only; delta patching is intentionally not enabled.
+- Actual audio playback depends on the user's installed player and codecs.
+- The true OEP, IAT repair, and inner code-level restoration of the original `黑黑de臉蛋 (RhoDump)` executable still require an isolated VM. This project does not claim to restore its original source code.
 
 ## License, sources, and acknowledgements
 
@@ -216,11 +247,8 @@ This source package is released under GPL-3.0. The complete license text is in [
 
 Acknowledgements:
 
-1. 黑黑de臉蛋's `臉蛋看看(RhoDump)`: for the historical program context and research sample source.
-2. [xpoi5010/Kartrider-File-Reader](https://github.com/xpoi5010/Kartrider-File-Reader): for public Rho/Rho5 format research and C# decoding reference code. Its GPL-3.0 license text is retained in `third_party/Kartrider-File-Reader/LICENSE`.
+1. 黑黑de臉蛋's 臉蛋看看 (RhoDump): for the historical program context and research sample source.
+2. [`xpoi5010/Kartrider-File-Reader`](https://github.com/xpoi5010/Kartrider-File-Reader): for public Rho/Rho5 format research and C# decoding reference code. Its GPL-3.0 license text is retained in `third_party/Kartrider-File-Reader/LICENSE`.
+3. [`brownsugar/kart-patcher`](https://github.com/brownsugar/kart-patcher): for public KartRider patcher workflow, `KartRider.pin`/patch socket research, NFO200 manifest handling, and update safety reference. The project is published under MIT; this application does not redistribute its Electron application or copyrighted game files.
 
-This project does not redistribute the original `臉蛋看看(RhoDump)` EXE, RAR archive, private source code, or user-provided game resources.
-
-## Related file
-
-- [`rho_probe.py`](rho_probe.py): an offline Rho inspection helper that uses the local source-package RhoKey and does not download a key over the network.
+The original RhoDump executable, archive, and user-provided game samples are not redistributed in this package.

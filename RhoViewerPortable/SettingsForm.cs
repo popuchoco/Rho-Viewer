@@ -82,6 +82,8 @@ internal sealed class SettingsForm : Form
         var settings = new AppSettings
         {
             RhoDirectory = _rhoDirectory.Text.Trim(),
+            GameDirectory = _current.GameDirectory,
+            GameRegion = _current.GameRegion,
             LogDirectory = _logDirectory.Text.Trim(),
             WindowWidth = _current.WindowWidth,
             WindowHeight = _current.WindowHeight,

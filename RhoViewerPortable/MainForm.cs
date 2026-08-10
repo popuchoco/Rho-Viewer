@@ -30,6 +30,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripButton _invertSelectionButton = new();
     private readonly ToolStripButton _cancelExportButton = new();
     private readonly ToolStripButton _importConfiguredButton = new();
+    private readonly ToolStripButton _gameUpdateButton = new();
     private readonly ToolStripButton _settingsButton = new();
     private readonly ToolStrip _toolStrip = new();
     private readonly HashSet<string> _playbackTempDirectories = new(StringComparer.OrdinalIgnoreCase);
@@ -84,6 +85,13 @@ internal sealed class MainForm : Form
         _importConfiguredButton.ToolTipText = "直接載入設定中的預設 Rho 目錄";
         _importConfiguredButton.Click += async (_, _) => await ImportConfiguredFolderAsync();
         _toolStrip.Items.Add(_importConfiguredButton);
+        _gameUpdateButton.Text = "更新遊戲檔案";
+        _gameUpdateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+        _gameUpdateButton.AutoSize = true;
+        _gameUpdateButton.Padding = new Padding(7, 4, 7, 4);
+        _gameUpdateButton.ToolTipText = "只選擇遊戲目錄，從 KartRider.pin 自動檢查並更新遊戲檔案";
+        _gameUpdateButton.Click += (_, _) => ShowGameUpdate();
+        _toolStrip.Items.Add(_gameUpdateButton);
         _toolStrip.Items.Add(CreateToolButton("＋ 選擇 Rho 檔案", async (_, _) => await ChooseFilesAsync()));
         _toolStrip.Items.Add(new ToolStripSeparator());
         _exportSelectedButton.Text = "匯出選取";
@@ -710,6 +718,28 @@ internal sealed class MainForm : Form
         AppLogger.Initialize(_settings.LogDirectory);
         AppLogger.Info("SaveSettings", $"rhoDirectory={_settings.RhoDirectory}; logDirectory={AppLogger.LogDirectory}");
         _statusLabel.Text = $"設定已儲存；Log：{AppLogger.LogDirectory}";
+        UpdateButtons();
+    }
+
+    private void ShowGameUpdate()
+    {
+        if (_busy)
+            return;
+
+        AppLogger.Info("OpenGameUpdate", "opened");
+        using var dialog = new GameUpdateForm(_settings);
+        dialog.ShowDialog(this);
+
+        var updated = dialog.GetSettings();
+        if (!updated.TrySave(out var error))
+        {
+            AppLogger.Error("SaveGameUpdateSettings", "failed", new IOException(error));
+            MessageBox.Show(this, $"遊戲更新設定儲存失敗：{error}", "設定未儲存", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        _settings = updated;
+        AppLogger.Info("SaveGameUpdateSettings", $"gameDirectory={_settings.GameDirectory}");
         UpdateButtons();
     }
 
@@ -1595,6 +1625,7 @@ internal sealed class MainForm : Form
         _cancelExportButton.Visible = _exportCts is not null;
         _cancelExportButton.Enabled = _exportCts is not null;
         _importConfiguredButton.Enabled = !_busy && Directory.Exists(_settings.RhoDirectory);
+        _gameUpdateButton.Enabled = !_busy;
     }
 
     private void CleanupPlaybackFiles()
@@ -1626,7 +1657,7 @@ internal sealed class MainForm : Form
     private void ShowAbout()
     {
         MessageBox.Show(this,
-            "Rho Viewer Portable 0.1.4\n\n" +
+            "Rho Viewer Portable 0.2.0\n\n" +
             "用於讀取、預覽與匯出 KartRider Rho 封包。\n" +
             "支援從資料夾遞迴掃描 .rho，也可直接多選檔案。\n\n" +
             "音效會先解出暫存檔，再交給 portable\\Players 或 Windows 預設播放器。\n" +

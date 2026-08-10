@@ -25,6 +25,50 @@ internal static class Program
             return FormatSelfTest.Run();
         }
 
+        if (args.Length > 0 && string.Equals(args[0], "--kart-crc-self-test", StringComparison.OrdinalIgnoreCase))
+        {
+            return KartCrcSelfTest.Run();
+        }
+
+        if (args.Length > 0 && string.Equals(args[0], "--kart-crc-file-test", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: RhoViewerPortable.exe --kart-crc-file-test file");
+                return 2;
+            }
+
+            return KartCrcSelfTest.RunFile(args[1]);
+        }
+
+        if (args.Length > 0 && string.Equals(args[0], "--patch-discovery-test", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: RhoViewerPortable.exe --patch-discovery-test gameDirectory [auto|tw|kr|cn]");
+                return 2;
+            }
+
+            var region = args.Length >= 3
+                ? KartRegionCatalog.FromCode(args[2]).Region
+                : KartUpdateRegion.Auto;
+            return PatchDiscoverySelfTest.Run(args[1], region).GetAwaiter().GetResult();
+        }
+
+        if (args.Length > 0 && string.Equals(args[0], "--patch-plan-test", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: RhoViewerPortable.exe --patch-plan-test gameDirectory [auto|tw|kr|cn]");
+                return 2;
+            }
+
+            var region = args.Length >= 3
+                ? KartRegionCatalog.FromCode(args[2]).Region
+                : KartUpdateRegion.Auto;
+            return PatchPlanSelfTest.Run(args[1], region).GetAwaiter().GetResult();
+        }
+
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         ApplicationConfiguration.Initialize();
         Application.Run(new MainForm());
@@ -60,6 +104,94 @@ internal static class UiSmokeTest
         };
         Application.Run(form);
         return exitCode;
+    }
+}
+
+internal static class KartCrcSelfTest
+{
+    public static int Run()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RhoViewerPortable", "KartCrcSelfTest", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "sample.bin");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllBytes(path, "abc"u8.ToArray());
+            var result = KartCrc.ComputeAsync(path).GetAwaiter().GetResult();
+            const uint expected = 0x024A0126;
+            if (result != expected)
+                throw new InvalidDataException($"Kart CRC mismatch: expected 0x{expected:X8}, got 0x{result:X8}");
+            Console.WriteLine($"OK Kart CRC: 0x{result:X8}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL Kart CRC: {ex.Message}");
+            return 1;
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup for the temporary self-test directory.
+            }
+        }
+    }
+
+    public static int RunFile(string path)
+    {
+        try
+        {
+            var result = KartCrc.ComputeAsync(path).GetAwaiter().GetResult();
+            Console.WriteLine($"OK Kart CRC: {Path.GetFileName(path)} = 0x{result:X8} ({result})");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL Kart CRC: {ex.Message}");
+            return 1;
+        }
+    }
+}
+
+internal static class PatchDiscoverySelfTest
+{
+    public static async Task<int> Run(string gameDirectory, KartUpdateRegion region)
+    {
+        try
+        {
+            var result = await KartPatchDiscovery.DiscoverAsync(gameDirectory, region, CancellationToken.None);
+            Console.WriteLine($"OK patch discovery: region={result.Region}; pin={result.PinPath}; client={result.ClientVersion}; server={result.ServerVersion}; socket={result.ServerHost}:{result.ServerPort}; endpoint={result.PatchBaseUrl}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL patch discovery: {ex.Message}");
+            return 1;
+        }
+    }
+}
+
+internal static class PatchPlanSelfTest
+{
+    public static async Task<int> Run(string gameDirectory, KartUpdateRegion region)
+    {
+        try
+        {
+            var plan = await new KartPatchService().BuildPlanAsync(gameDirectory, region, CancellationToken.None);
+            Console.WriteLine($"OK patch plan: region={plan.Region}; server={plan.ServerVersion}; files={plan.Items.Count}; changes={plan.Changes.Count}; downloadBytes={plan.DownloadBytes}; base={plan.PatchBaseUrl}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL patch plan: {ex.Message}");
+            return 1;
+        }
     }
 }
 
