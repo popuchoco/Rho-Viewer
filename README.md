@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.2.0` — framework-dependent `win-x64` portable release.
+`0.3.0` — framework-dependent `win-x64` portable release. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 8 Desktop Runtime for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -99,7 +99,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft .NET 8 Desktop Runtime for Windows x64.
-2. Extract the portable ZIP from the GitHub Release page.
+2. Download `RhoViewerPortable_v0.3.0_win-x64.zip` from the [v0.3.0 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.0) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -199,7 +199,7 @@ dotnet publish RhoViewerPortable\\RhoViewerPortable.csproj `
 
 `--self-contained false` is intentional: the release package does not carry the .NET Runtime. `PublishSingleFile=false` keeps the application DLL, dependency files, and runtimeconfig visible for troubleshooting and for confirming a framework-dependent deployment.
 
-The GitHub Actions CI workflow also publishes a Windows x64 portable package named `Rho-Viewer-win-x64` and attaches it to the workflow run as an artifact (retained for 14 days). Download and extract the artifact contents together; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 8 Desktop Runtime.
+The GitHub Actions CI workflow publishes the Windows x64 portable package as a ZIP asset on versioned GitHub Releases and also attaches the publish directory to the workflow run as an artifact (retained for 14 days). Download and extract the complete ZIP; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 8 Desktop Runtime.
 
 ## Offline self-tests
 
