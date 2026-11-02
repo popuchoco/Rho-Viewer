@@ -288,13 +288,51 @@ internal static class FormatSelfTest
                 ResourceClassifier.Classify(".ogg") != ResourceKind.Audio)
                 throw new InvalidDataException("Resource classification synthetic test failed.");
 
-            Console.WriteLine("OK format analyzers: FLAC synthetic, OGG rejection, KSV fallback, .1s marker probe; resource categories");
+            TestArchivePathNormalization();
+
+            Console.WriteLine("OK format analyzers: FLAC synthetic, OGG rejection, KSV fallback, .1s marker probe; resource categories; Rho5 part grouping; LPK compatibility guard");
             return 0;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"FAIL format analyzers: {ex.Message}");
             return 1;
+        }
+    }
+
+    private static void TestArchivePathNormalization()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RhoViewerPortable", "ArchivePathSelfTest", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var rho5First = Path.Combine(directory, "DataPack7_00000.rho5");
+            var rho5Second = Path.Combine(directory, "DataPack7_00001.rho5");
+            var lpkFirst = Path.Combine(directory, "DataPack8_00000.lpk");
+            var lpkSecond = Path.Combine(directory, "DataPack8_00001.lpk");
+            File.WriteAllBytes(rho5First, Array.Empty<byte>());
+            File.WriteAllBytes(rho5Second, Array.Empty<byte>());
+            File.WriteAllBytes(lpkFirst, Array.Empty<byte>());
+            File.WriteAllBytes(lpkSecond, Array.Empty<byte>());
+
+            if (!string.Equals(RhoReader.GetCanonicalPath(rho5Second), rho5First, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Rho5 parts were not grouped by data-pack prefix.");
+            if (!string.Equals(RhoReader.GetCanonicalPath(lpkSecond), lpkFirst, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("LPK parts were not grouped by data-pack prefix.");
+
+            try
+            {
+                RhoReader.Open(lpkFirst);
+                throw new InvalidDataException("Unsupported LPK was silently opened as another archive format.");
+            }
+            catch (NotSupportedException ex) when (ex.Message.Contains("Live2DViewerEx", StringComparison.Ordinal))
+            {
+                // The diagnostic prevents the unrelated Live2D LPK decoder from being mistaken for KartRider support.
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
         }
     }
 

@@ -243,7 +243,7 @@ internal sealed class MainForm : Form
 
         var title = new Label
         {
-            Text = "已載入的 Rho 封包",
+            Text = "已載入的封包",
             Dock = DockStyle.Fill,
             Font = new Font(Font, FontStyle.Bold),
             ForeColor = Color.FromArgb(35, 44, 58),
@@ -280,7 +280,7 @@ internal sealed class MainForm : Form
 
         var hint = new Label
         {
-            Text = "可拖曳資料夾或 .rho 到視窗\n選取封包可快速篩選內容",
+            Text = "可拖曳資料夾或 .rho／.rho5／.lpk 到視窗\nLPK 會顯示目前的相容性診斷",
             Dock = DockStyle.Fill,
             ForeColor = Color.FromArgb(110, 119, 132),
             TextAlign = ContentAlignment.MiddleLeft,
@@ -576,11 +576,11 @@ internal sealed class MainForm : Form
             return;
 
         AppLogger.Info("DragDrop", $"items={dropped.Length}");
-        var files = await CollectRhoFilesAsync(dropped);
+        var files = await CollectArchiveFilesAsync(dropped);
         if (files.Count > 0)
             await LoadPathsAsync(files);
         else
-            MessageBox.Show(this, "拖曳內容中找不到 .rho 檔案。", "沒有可載入的檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "拖曳內容中找不到 .rho、.rho5 或 .lpk 封包。", "沒有可載入的檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void MainForm_DragEnter(object? sender, DragEventArgs e)
@@ -674,7 +674,7 @@ internal sealed class MainForm : Form
 
         using var dialog = new FolderBrowserDialog
         {
-            Description = "選擇要掃描 .rho 檔案的資料夾（包含子資料夾）",
+            Description = "選擇要掃描 .rho、.rho5 與 .lpk 封包的資料夾（包含子資料夾）",
             UseDescriptionForTitle = true,
             ShowNewFolderButton = false,
             SelectedPath = Directory.Exists(_settings.RhoDirectory) ? _settings.RhoDirectory : string.Empty
@@ -683,10 +683,10 @@ internal sealed class MainForm : Form
             return;
 
         AppLogger.Info("ChooseFolder", $"selected={dialog.SelectedPath}");
-        var files = await CollectRhoFilesAsync(new[] { dialog.SelectedPath });
+        var files = await CollectArchiveFilesAsync(new[] { dialog.SelectedPath });
         if (files.Count == 0)
         {
-            MessageBox.Show(this, "此資料夾與子資料夾沒有找到 .rho 檔案。", "沒有可載入的檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "此資料夾與子資料夾沒有找到 .rho、.rho5 或 .lpk 封包。", "沒有可載入的檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -706,11 +706,11 @@ internal sealed class MainForm : Form
         }
 
         AppLogger.Info("ImportConfiguredFolder", $"directory={_settings.RhoDirectory}");
-        var files = await CollectRhoFilesAsync(new[] { _settings.RhoDirectory });
+        var files = await CollectArchiveFilesAsync(new[] { _settings.RhoDirectory });
         if (files.Count == 0)
         {
-            AppLogger.Warning("ImportConfiguredFolder", "no rho files found");
-            MessageBox.Show(this, "預設 Rho 目錄與子資料夾沒有找到 .rho 檔案。", "沒有可載入的檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            AppLogger.Warning("ImportConfiguredFolder", "no rho/rho5 files found");
+            MessageBox.Show(this, "預設封包目錄與子資料夾沒有找到 .rho 或 .rho5 檔案。", "沒有可載入的檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -774,8 +774,8 @@ internal sealed class MainForm : Form
 
         using var dialog = new OpenFileDialog
         {
-            Title = "選擇 Rho 檔案",
-            Filter = "Rho 封包 (*.rho)|*.rho|所有檔案 (*.*)|*.*",
+            Title = "選擇封包檔案",
+            Filter = "KartRider 封包 (*.rho;*.rho5;*.lpk)|*.rho;*.rho5;*.lpk|所有檔案 (*.*)|*.*",
             Multiselect = true,
             CheckFileExists = true,
             RestoreDirectory = true
@@ -787,7 +787,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static async Task<List<string>> CollectRhoFilesAsync(IEnumerable<string> roots)
+    private static async Task<List<string>> CollectArchiveFilesAsync(IEnumerable<string> roots)
     {
         return await Task.Run(() =>
         {
@@ -798,12 +798,15 @@ internal sealed class MainForm : Form
                 {
                     if (Directory.Exists(root))
                     {
-                        foreach (var file in Directory.EnumerateFiles(root, "*.rho", SearchOption.AllDirectories))
-                            result.Add(System.IO.Path.GetFullPath(file));
+                        foreach (var file in Directory.EnumerateFiles(root, "*.rho", SearchOption.AllDirectories)
+                                     .Concat(Directory.EnumerateFiles(root, "*.rho5", SearchOption.AllDirectories))
+                                     .Concat(Directory.EnumerateFiles(root, "*.lpk", SearchOption.AllDirectories)))
+                            result.Add(RhoReader.GetCanonicalPath(file));
                     }
-                    else if (File.Exists(root) && string.Equals(System.IO.Path.GetExtension(root), ".rho", StringComparison.OrdinalIgnoreCase))
+                    else if (File.Exists(root) &&
+                             new[] { ".rho", ".rho5", ".lpk" }.Contains(System.IO.Path.GetExtension(root), StringComparer.OrdinalIgnoreCase))
                     {
-                        result.Add(System.IO.Path.GetFullPath(root));
+                        result.Add(RhoReader.GetCanonicalPath(root));
                     }
                 }
                 catch (UnauthorizedAccessException)
@@ -827,17 +830,17 @@ internal sealed class MainForm : Form
 
         var uniquePaths = paths
             .Where(File.Exists)
-            .Select(Path.GetFullPath)
+            .Select(RhoReader.GetCanonicalPath)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(path => !_contexts.Any(context => string.Equals(context.Path, path, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
         if (uniquePaths.Length == 0)
         {
-            MessageBox.Show(this, "選取的檔案都已載入，或沒有可用的 .rho 檔案。", "沒有新增檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "選取的檔案都已載入，或沒有可用的封包檔案。", "沒有新增檔案", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        SetBusy(true, $"正在讀取 {uniquePaths.Length} 個 Rho 封包…");
+        SetBusy(true, $"正在讀取 {uniquePaths.Length} 個封包…");
         AppLogger.Info("LoadPaths", $"count={uniquePaths.Length}");
         var loaded = new List<RhoArchiveContext>();
         var failures = new List<string>();
@@ -847,7 +850,7 @@ internal sealed class MainForm : Form
             {
                 try
                 {
-                    var context = await Task.Run(() => RhoReader.Open(path));
+                    var context = await Task.Run(() => RhoReader.Open(path, _settings.GameRegion));
                     loaded.Add(context);
                     _statusLabel.Text = $"已讀取 {loaded.Count}/{uniquePaths.Length}：{Path.GetFileName(path)}";
                 }
@@ -868,7 +871,7 @@ internal sealed class MainForm : Form
                 var details = string.Join(Environment.NewLine, failures.Take(8));
                 if (failures.Count > 8)
                     details += Environment.NewLine + $"…另有 {failures.Count - 8} 個檔案失敗。";
-                MessageBox.Show(this, details, "部分 Rho 無法讀取", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, details, "部分封包無法讀取", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
         finally
@@ -1148,9 +1151,9 @@ internal sealed class MainForm : Form
 
     private static string BuildArchiveSummary(RhoArchiveContext context)
     {
-        var builder = new StringBuilder("Rho 封包分析\n");
+        var builder = new StringBuilder("KartRider 封包分析\n");
         builder.AppendLine($"檔案：{context.DisplayName}");
-        builder.AppendLine($"檔案大小：{FormatSize(new FileInfo(context.Path).Length)}");
+        builder.AppendLine($"檔案大小：{FormatSize(context.StoredSize)}");
         builder.AppendLine($"格式層：{context.LayerVersion}");
         builder.AppendLine($"子資料夾數：{context.FolderCount:N0}");
         builder.AppendLine($"資源數：{context.Items.Count:N0}");
@@ -1159,7 +1162,7 @@ internal sealed class MainForm : Form
         {
             builder.AppendLine();
             builder.AppendLine("結果：封包已成功解析，但沒有資源項目。");
-            builder.AppendLine("這不是載入失敗；目前檔案本身是空的 Rho 封包，因此沒有可預覽、可分析或可匯出的內容。");
+            builder.AppendLine("這不是載入失敗；目前檔案本身是空的封包，因此沒有可預覽、可分析或可匯出的內容。");
             return builder.ToString();
         }
 
@@ -1186,7 +1189,7 @@ internal sealed class MainForm : Form
 
     private string BuildAllArchivesSummary()
     {
-        var builder = new StringBuilder("Rho 封包分析摘要\n");
+        var builder = new StringBuilder("KartRider 封包分析摘要\n");
         builder.AppendLine($"封包數：{_contexts.Count:N0}");
         builder.AppendLine($"資源總數：{_allItems.Count:N0}");
         builder.AppendLine($"空封包：{_contexts.Count(context => context.Items.Count == 0):N0}");

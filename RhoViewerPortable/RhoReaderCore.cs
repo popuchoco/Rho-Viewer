@@ -1,28 +1,55 @@
 using System.Text;
+using System.Text.RegularExpressions;
+using KartLibrary.Consts;
 using KartLibrary.File;
 
 namespace RhoViewerPortable;
 
 internal sealed class RhoArchiveContext : IDisposable
 {
-    private readonly RhoArchive _archive;
+    private readonly IDisposable _archive;
 
-    private RhoArchiveContext(string path, RhoArchive archive, IReadOnlyList<RhoItem> items, string layerVersion, int folderCount)
+    private RhoArchiveContext(
+        string path,
+        string displayName,
+        IDisposable archive,
+        IReadOnlyList<RhoItem> items,
+        string layerVersion,
+        int folderCount,
+        long storedSize)
     {
         Path = path;
+        DisplayName = displayName;
         _archive = archive;
         Items = items;
         LayerVersion = layerVersion;
         FolderCount = folderCount;
+        StoredSize = storedSize;
     }
 
     public string Path { get; }
-    public string DisplayName => System.IO.Path.GetFileName(Path);
+    public string DisplayName { get; }
     public string LayerVersion { get; }
     public int FolderCount { get; }
+    public long StoredSize { get; }
     public IReadOnlyList<RhoItem> Items { get; }
 
-    public static RhoArchiveContext Open(string path)
+    public static RhoArchiveContext Open(string path, string regionCode = "auto")
+    {
+        var extension = System.IO.Path.GetExtension(path);
+        if (string.Equals(extension, ".rho5", StringComparison.OrdinalIgnoreCase))
+            return OpenRho5(path, regionCode);
+
+        if (string.Equals(extension, ".lpk", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException(
+                "此 KartRider .lpk 尚無相容的解密器。你提供的 LpkUnpacker 是 Live2DViewerEx 的 LPK 解包器（預期 ZIP/config.mlve），與本 DataPack 格式不相容；目前兩個樣本也無法由舊 Rho5 解密器讀取。需要對應 Nexon LPK 格式規格或相容的開源解析器。");
+        }
+
+        return OpenRho(path);
+    }
+
+    private static RhoArchiveContext OpenRho(string path)
     {
         var archive = new RhoArchive();
         try
@@ -30,7 +57,14 @@ internal sealed class RhoArchiveContext : IDisposable
             archive.Open(path);
             var layer = ReadLayerVersion(path);
             var items = new List<RhoItem>();
-            var context = new RhoArchiveContext(path, archive, items, layer, CountChildFolders(archive.RootFolder));
+            var context = new RhoArchiveContext(
+                path,
+                System.IO.Path.GetFileName(path),
+                archive,
+                items,
+                layer,
+                CountChildFolders(archive.RootFolder),
+                new FileInfo(path).Length);
             Flatten(archive.RootFolder, string.Empty, items, context);
             return context;
         }
@@ -39,29 +73,77 @@ internal sealed class RhoArchiveContext : IDisposable
             archive.Dispose();
             throw;
         }
+    }
 
-        static void Flatten(RhoFolder folder, string parentPath, List<RhoItem> target, RhoArchiveContext owner)
+    private static RhoArchiveContext OpenRho5(string path, string regionCode)
+    {
+        var fullPath = System.IO.Path.GetFullPath(path);
+        var fileName = System.IO.Path.GetFileName(fullPath);
+        var match = Regex.Match(fileName, @"^(?<pack>.+)_(?<part>\d{5})\.rho5$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success)
+            throw new InvalidDataException("Rho5 檔名必須符合 DataPackN_00000.rho5 這類 5 位數分卷格式。");
+
+        var packName = match.Groups["pack"].Value;
+        var directory = System.IO.Path.GetDirectoryName(fullPath)!;
+        var countryCode = ResolveRho5Region(fullPath, regionCode);
+        var archive = new Rho5Archive();
+        try
         {
-            foreach (var file in folder.Files.OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase))
-            {
-                var relativePath = string.IsNullOrEmpty(parentPath) ? file.Name : $"{parentPath}/{file.Name}";
-                target.Add(new RhoItem(owner, file, relativePath));
-            }
+            archive.Open(directory, packName, countryCode);
+            var items = new List<RhoItem>();
 
-            foreach (var child in folder.Folders.OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
-            {
-                var childPath = string.IsNullOrEmpty(parentPath) ? child.Name : $"{parentPath}/{child.Name}";
-                Flatten(child, childPath, target, owner);
-            }
+            var partFiles = Directory.EnumerateFiles(directory, $"{packName}_*.rho5", SearchOption.TopDirectoryOnly)
+                .Where(candidate => Regex.IsMatch(
+                    System.IO.Path.GetFileName(candidate),
+                    $"^{Regex.Escape(packName)}_\\d{{5}}\\.rho5$",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                .ToArray();
+            if (partFiles.Length == 0)
+                throw new FileNotFoundException($"找不到 {packName}_00000.rho5 分卷。");
+
+            var identityPath = partFiles.OrderBy(candidate => candidate, StringComparer.OrdinalIgnoreCase).First();
+            var context = new RhoArchiveContext(
+                identityPath,
+                $"{packName}（Rho5）",
+                archive,
+                items,
+                $"Rho5 v2 / {countryCode}",
+                CountChildFolders(archive.RootFolder),
+                partFiles.Sum(candidate => new FileInfo(candidate).Length));
+            Flatten(archive.RootFolder, string.Empty, items, context);
+            return context;
+        }
+        catch
+        {
+            archive.Dispose();
+            throw;
+        }
+    }
+
+    private static CountryCode ResolveRho5Region(string path, string regionCode)
+    {
+        var explicitRegion = regionCode.Trim().ToLowerInvariant() switch
+        {
+            "tw" => CountryCode.TW,
+            "kr" => CountryCode.KR,
+            "cn" => CountryCode.CN,
+            _ => CountryCode.None
+        };
+        if (explicitRegion != CountryCode.None)
+            return explicitRegion;
+
+        for (var directory = new DirectoryInfo(System.IO.Path.GetDirectoryName(path)!); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(System.IO.Path.Combine(directory.FullName, "KartRiderTW.ini")))
+                return CountryCode.TW;
+            if (File.Exists(System.IO.Path.Combine(directory.FullName, "KartRiderKR.ini")))
+                return CountryCode.KR;
+            if (File.Exists(System.IO.Path.Combine(directory.FullName, "KartRiderCN.ini")))
+                return CountryCode.CN;
         }
 
-        static int CountChildFolders(RhoFolder folder)
-        {
-            var count = 0;
-            foreach (var child in folder.Folders)
-                count += 1 + CountChildFolders(child);
-            return count;
-        }
+        throw new InvalidOperationException(
+            "Rho5 解密需要 TW/KR/CN 區域混合字串。請在遊戲更新設定中選擇遊戲區域，或將 Rho5 放在含 KartRiderTW.ini、KartRiderKR.ini 或 KartRiderCN.ini 的遊戲資料夾中以便自動判斷。");
     }
 
     private static string ReadLayerVersion(string path)
@@ -73,37 +155,106 @@ internal sealed class RhoArchiveContext : IDisposable
         return text.Contains("1.1", StringComparison.Ordinal) ? "Rh layer 1.1" : text.Contains("1.0", StringComparison.Ordinal) ? "Rh layer 1.0" : text;
     }
 
+    private static void Flatten(RhoFolder folder, string parentPath, List<RhoItem> target, RhoArchiveContext owner)
+    {
+        foreach (var file in folder.Files.OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var relativePath = string.IsNullOrEmpty(parentPath) ? file.Name : $"{parentPath}/{file.Name}";
+            target.Add(new RhoItem(owner, file.Name, relativePath, file.Size, file.FileEncryptionProperty.ToString(), file.GetBytes));
+        }
+
+        foreach (var child in folder.Folders.OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var childPath = string.IsNullOrEmpty(parentPath) ? child.Name : $"{parentPath}/{child.Name}";
+            Flatten(child, childPath, target, owner);
+        }
+    }
+
+    private static void Flatten(Rho5Folder folder, string parentPath, List<RhoItem> target, RhoArchiveContext owner)
+    {
+        foreach (var file in folder.Files.OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var relativePath = string.IsNullOrEmpty(parentPath) ? file.Name : $"{parentPath}/{file.Name}";
+            target.Add(new RhoItem(owner, file.Name, relativePath, file.Size, "Rho5 加密資源（讀取時解密）", file.GetBytes));
+        }
+
+        foreach (var child in folder.Folders.OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var childPath = string.IsNullOrEmpty(parentPath) ? child.Name : $"{parentPath}/{child.Name}";
+            Flatten(child, childPath, target, owner);
+        }
+    }
+
+    private static int CountChildFolders(RhoFolder folder)
+        => folder.Folders.Sum(child => 1 + CountChildFolders(child));
+
+    private static int CountChildFolders(Rho5Folder folder)
+        => folder.Folders.Sum(child => 1 + CountChildFolders(child));
+
     public void Dispose() => _archive.Dispose();
 }
 
 internal sealed class RhoItem
 {
-    internal RhoItem(RhoArchiveContext owner, RhoFile file, string relativePath)
+    private readonly Func<byte[]> _readBytes;
+
+    internal RhoItem(RhoArchiveContext? owner, string name, string relativePath, int size, string property, Func<byte[]> readBytes)
     {
         Owner = owner;
-        File = file;
+        Name = name;
         RelativePath = relativePath;
+        Size = size;
+        Property = property;
+        _readBytes = readBytes;
     }
 
     internal RhoArchiveContext Owner { get; }
-    internal RhoFile File { get; }
     public string RelativePath { get; }
-    public string Name => File.Name;
+    public string Name { get; }
     public string Extension => System.IO.Path.GetExtension(Name).ToLowerInvariant();
     public ResourceKind Kind => ResourceClassifier.Classify(Extension);
-    public int Size => File.Size;
-    public string Property => File.FileEncryptionProperty.ToString();
+    public int Size { get; }
+    public string Property { get; }
 
-    public byte[] ReadBytes() => File.GetBytes();
+    public byte[] ReadBytes() => _readBytes();
 }
 
 internal static class RhoReader
 {
-    public static RhoArchiveContext Open(string path)
-    {
-        if (!System.IO.File.Exists(path))
-            throw new FileNotFoundException("找不到 Rho 檔案。", path);
+    private static readonly Regex Rho5PartPattern = new(@"^(?<pack>.+)_(?<part>\d{5})\.rho5$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex LpkPartPattern = new(@"^(?<pack>.+)_(?<part>\d{5})\.lpk$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-        return RhoArchiveContext.Open(path);
+    public static string GetCanonicalPath(string path)
+    {
+        var fullPath = System.IO.Path.GetFullPath(path);
+        var extension = System.IO.Path.GetExtension(fullPath);
+        var pattern = extension.Equals(".rho5", StringComparison.OrdinalIgnoreCase)
+            ? Rho5PartPattern
+            : extension.Equals(".lpk", StringComparison.OrdinalIgnoreCase)
+                ? LpkPartPattern
+                : null;
+        if (pattern is null)
+            return fullPath;
+
+        var match = pattern.Match(System.IO.Path.GetFileName(fullPath));
+        if (!match.Success)
+            return fullPath;
+
+        var directory = System.IO.Path.GetDirectoryName(fullPath)!;
+        var packName = match.Groups["pack"].Value;
+        var candidatePattern = extension.Equals(".rho5", StringComparison.OrdinalIgnoreCase) ? Rho5PartPattern : LpkPartPattern;
+        return Directory.EnumerateFiles(directory, $"{packName}_*{extension}", SearchOption.TopDirectoryOnly)
+            .Where(candidate => candidatePattern.IsMatch(System.IO.Path.GetFileName(candidate)) &&
+                                string.Equals(candidatePattern.Match(System.IO.Path.GetFileName(candidate)).Groups["pack"].Value, packName, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(candidate => System.IO.Path.GetFileName(candidate), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault() ?? fullPath;
+    }
+
+    public static RhoArchiveContext Open(string path, string regionCode = "auto")
+    {
+        if (!File.Exists(path))
+            throw new FileNotFoundException("找不到 Rho 封包。", path);
+
+        return RhoArchiveContext.Open(path, regionCode);
     }
 }

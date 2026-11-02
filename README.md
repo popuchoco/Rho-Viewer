@@ -1,6 +1,6 @@
 # Rho Viewer Portable
 
-Rho Viewer Portable is a Windows x64 WinForms desktop tool for reading, searching, analyzing, previewing, exporting, and safely updating KartRider `.rho` game resources.
+Rho Viewer Portable is a Windows x64 WinForms desktop tool for reading, searching, analyzing, previewing, and exporting KartRider `.rho` and `.rho5` game resources, with a separate game-file updater.
 
 This project is a functional reconstruction based on the behavior of an older user-provided tool and publicly available Rho format research. It is not a restoration of the original source code of `黑黑de臉蛋 (RhoDump)`, and it does not redistribute the original executable, archive, or game data.
 
@@ -20,11 +20,12 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 
 ## Features
 
-### Rho reading and browsing
+### Rho and Rho5 reading and browsing
 
-- Recursively scan a directory for `.rho` files.
-- Select one or more `.rho` files directly.
-- Drag a directory or `.rho` files into the window.
+- Recursively scan a directory for `.rho` archives and `.rho5` data-pack sets.
+- Select `.rho` files directly; opening any `.rho5` part loads its complete same-prefix data-pack set.
+- Drag a directory or supported archive files into the window.
+- Decrypt legacy Rho5 resources using the vendored KartRider-File-Reader implementation; use the saved TW/KR/CN region setting or detect the region from a nearby `KartRiderTW.ini`, `KartRiderKR.ini`, or `KartRiderCN.ini`.
 - Display archive name, resource path, type, size, and protection method.
 - Show loaded archives and the internal folder tree on the left, with a breadcrumb and resource list on the right.
 - Preserve the original archive order for the resource list and folder tree; manual sorting is intentionally not provided.
@@ -41,6 +42,12 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Identify Ogg/Vorbis and Opus streams and report channels, sample rate, estimated duration, and tags.
 - Read FLAC STREAMINFO, channels, sample rate, bit depth, estimated duration, and Vorbis comments.
 - Clearly distinguish a valid empty archive from a load or parsing failure.
+
+### LPK format status
+
+- `.lpk` files are recognized and produce an explicit unsupported-format diagnostic; they are not treated as `.rho` or `.rho5` files.
+- The supplied [`ihopenot/LpkUnpacker`](https://github.com/ihopenot/LpkUnpacker) project targets Live2DViewerEx LPK archives (ZIP containers with `config.mlve`), not the supplied KartRider `DataPack*.lpk` files. The two local DataPack samples are not ZIP archives and the vendored Rho5 reader rejects them, so the project does not guess a decryption algorithm or copy code from the unrelated tool.
+- A compatible Nexon DataPack LPK specification or a correctly scoped open-source implementation is still required before LPK decryption can be implemented.
 
 ### Export and audio playback
 
@@ -194,13 +201,13 @@ The GitHub Actions CI workflow also publishes a Windows x64 portable package nam
 ```powershell
 RhoViewerPortable.exe --format-self-test
 RhoViewerPortable.exe --kart-crc-self-test
-RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho
+RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho DataPack1_00000.rho5
 RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
 - `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, and resource categories.
 - `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
-- `--self-test`: reads specified Rho files and verifies archive, image, audio extraction, and analyzer behavior.
+- `--self-test`: reads specified `.rho` or `.rho5` archive inputs and verifies archive, image, audio extraction, and analyzer behavior.
 - `--smoke-load`: creates the WinForms main window, loads the specified Rho, and closes automatically to detect startup or loading crashes.
 
 ## Architecture overview
@@ -209,7 +216,7 @@ RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 MainForm (WinForms UI)
 ├── AppSettings / AppLogger
 ├── RhoReaderCore
-│   └── local KartLibrary / RhoArchive / RhoFolder / RhoFile
+│   └── local KartLibrary / RhoArchive / Rho5Archive / RhoFolder / RhoFile
 ├── ResourceAnalyzers
 │   ├── KSV summary
 │   ├── OGG Vorbis / Opus metadata
