@@ -187,6 +187,8 @@ dotnet publish RhoViewerPortable\\RhoViewerPortable.csproj `
 
 `--self-contained false` is intentional: the release package does not carry the .NET Runtime. `PublishSingleFile=false` keeps the application DLL, dependency files, and runtimeconfig visible for troubleshooting and for confirming a framework-dependent deployment.
 
+The GitHub Actions CI workflow also publishes a Windows x64 portable package named `Rho-Viewer-win-x64` and attaches it to the workflow run as an artifact (retained for 14 days). Download and extract the artifact contents together; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 8 Desktop Runtime.
+
 ## Offline self-tests
 
 ```powershell
