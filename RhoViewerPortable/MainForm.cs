@@ -280,7 +280,7 @@ internal sealed class MainForm : Form
 
         var hint = new Label
         {
-            Text = "可拖曳資料夾或 .rho／.rho5／.lpk 到視窗\nLPK 會顯示目前的相容性診斷",
+            Text = "可拖曳資料夾或 .rho／.rho5／.lpk 到視窗\n支援 KartRider LPK v4 資源瀏覽與解密",
             Dock = DockStyle.Fill,
             ForeColor = Color.FromArgb(110, 119, 132),
             TextAlign = ContentAlignment.MiddleLeft,

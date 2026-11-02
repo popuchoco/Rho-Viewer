@@ -41,13 +41,46 @@ internal sealed class RhoArchiveContext : IDisposable
             return OpenRho5(path, regionCode);
 
         if (string.Equals(extension, ".lpk", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new NotSupportedException(
-                "此 KartRider .lpk 尚無相容的解密器。你提供的 LpkUnpacker 是 Live2DViewerEx 的 LPK 解包器（預期 ZIP/config.mlve），與本 DataPack 格式不相容；目前兩個樣本也無法由舊 Rho5 解密器讀取。需要對應 Nexon LPK 格式規格或相容的開源解析器。");
-        }
+            return OpenLpk(path);
 
         return OpenRho(path);
     }
+
+    private static RhoArchiveContext OpenLpk(string path)
+    {
+        var archive = LpkArchive.Open(path);
+        try
+        {
+            var items = new List<RhoItem>(archive.Entries.Count);
+            var context = new RhoArchiveContext(
+                path,
+                System.IO.Path.GetFileName(path),
+                archive,
+                items,
+                "LPK v4",
+                CountLpkFolders(archive.Entries),
+                new FileInfo(path).Length);
+            foreach (var entry in archive.Entries)
+            {
+                var name = System.IO.Path.GetFileName(entry.RelativePath);
+                var property = $"LPK v4 flags={entry.Flags}" + ((entry.Flags & 1) != 0 ? "（ZLib 壓縮）" : "（未壓縮）");
+                items.Add(new RhoItem(context, name, entry.RelativePath, entry.Size, property, () => archive.Read(entry)));
+            }
+            return context;
+        }
+        catch
+        {
+            archive.Dispose();
+            throw;
+        }
+    }
+
+    private static int CountLpkFolders(IEnumerable<LpkArchive.LpkEntry> entries)
+        => entries.SelectMany(entry =>
+                entry.RelativePath.Split('/').SkipLast(1)
+                    .Select((_, index) => string.Join("/", entry.RelativePath.Split('/').Take(index + 1))))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
 
     private static RhoArchiveContext OpenRho(string path)
     {
@@ -198,7 +231,7 @@ internal sealed class RhoItem
 {
     private readonly Func<byte[]> _readBytes;
 
-    internal RhoItem(RhoArchiveContext? owner, string name, string relativePath, int size, string property, Func<byte[]> readBytes)
+    internal RhoItem(RhoArchiveContext owner, string name, string relativePath, int size, string property, Func<byte[]> readBytes)
     {
         Owner = owner;
         Name = name;
@@ -217,22 +250,18 @@ internal sealed class RhoItem
     public string Property { get; }
 
     public byte[] ReadBytes() => _readBytes();
+
 }
 
 internal static class RhoReader
 {
     private static readonly Regex Rho5PartPattern = new(@"^(?<pack>.+)_(?<part>\d{5})\.rho5$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    private static readonly Regex LpkPartPattern = new(@"^(?<pack>.+)_(?<part>\d{5})\.lpk$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public static string GetCanonicalPath(string path)
     {
         var fullPath = System.IO.Path.GetFullPath(path);
         var extension = System.IO.Path.GetExtension(fullPath);
-        var pattern = extension.Equals(".rho5", StringComparison.OrdinalIgnoreCase)
-            ? Rho5PartPattern
-            : extension.Equals(".lpk", StringComparison.OrdinalIgnoreCase)
-                ? LpkPartPattern
-                : null;
+        var pattern = extension.Equals(".rho5", StringComparison.OrdinalIgnoreCase) ? Rho5PartPattern : null;
         if (pattern is null)
             return fullPath;
 
@@ -242,7 +271,7 @@ internal static class RhoReader
 
         var directory = System.IO.Path.GetDirectoryName(fullPath)!;
         var packName = match.Groups["pack"].Value;
-        var candidatePattern = extension.Equals(".rho5", StringComparison.OrdinalIgnoreCase) ? Rho5PartPattern : LpkPartPattern;
+        var candidatePattern = Rho5PartPattern;
         return Directory.EnumerateFiles(directory, $"{packName}_*{extension}", SearchOption.TopDirectoryOnly)
             .Where(candidate => candidatePattern.IsMatch(System.IO.Path.GetFileName(candidate)) &&
                                 string.Equals(candidatePattern.Match(System.IO.Path.GetFileName(candidate)).Groups["pack"].Value, packName, StringComparison.OrdinalIgnoreCase))

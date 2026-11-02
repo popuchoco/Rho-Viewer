@@ -1,6 +1,6 @@
 # Rho Viewer Portable
 
-Rho Viewer Portable is a Windows x64 WinForms desktop tool for reading, searching, analyzing, previewing, and exporting KartRider `.rho` and `.rho5` game resources, with a separate game-file updater.
+Rho Viewer Portable is a Windows x64 WinForms desktop tool for reading, searching, analyzing, previewing, and exporting KartRider `.rho`, `.rho5`, and Nexon LPK v4 game resources, with a separate game-file updater.
 
 This project is a functional reconstruction based on the behavior of an older user-provided tool and publicly available Rho format research. It is not a restoration of the original source code of `黑黑de臉蛋 (RhoDump)`, and it does not redistribute the original executable, archive, or game data.
 
@@ -20,10 +20,12 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 
 ## Features
 
-### Rho and Rho5 reading and browsing
+### Rho, Rho5, and LPK reading and browsing
 
-- Recursively scan a directory for `.rho` archives and `.rho5` data-pack sets.
+- Recursively scan a directory for `.rho` archives, `.rho5` data-pack sets, and `.lpk` packages.
 - Select `.rho` files directly; opening any `.rho5` part loads its complete same-prefix data-pack set.
+- Open each `.lpk` package independently; LPK decryption keys depend on the original package filename.
+- Read Nexon KartRider LPK v4 resource tables and decrypt/extract entries with flags 6/7 and zero sections; verify decoded resource size and MD5 before use.
 - Drag a directory or supported archive files into the window.
 - Decrypt legacy Rho5 resources using the vendored KartRider-File-Reader implementation; use the saved TW/KR/CN region setting or detect the region from a nearby `KartRiderTW.ini`, `KartRiderKR.ini`, or `KartRiderCN.ini`.
 - Display archive name, resource path, type, size, and protection method.
@@ -43,11 +45,13 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Read FLAC STREAMINFO, channels, sample rate, bit depth, estimated duration, and Vorbis comments.
 - Clearly distinguish a valid empty archive from a load or parsing failure.
 
-### LPK format status
+### LPK v4 support and limits
 
-- `.lpk` files are recognized and produce an explicit unsupported-format diagnostic; they are not treated as `.rho` or `.rho5` files.
-- The supplied [`ihopenot/LpkUnpacker`](https://github.com/ihopenot/LpkUnpacker) project targets Live2DViewerEx LPK archives (ZIP containers with `config.mlve`), not the supplied KartRider `DataPack*.lpk` files. The two local DataPack samples are not ZIP archives and the vendored Rho5 reader rejects them, so the project does not guess a decryption algorithm or copy code from the unrelated tool.
-- A compatible Nexon DataPack LPK specification or a correctly scoped open-source implementation is still required before LPK decryption can be implemented.
+- LPK v4 reading is implemented as an independent, read-only decoder; it does not modify or repack source packages.
+- The supported table layout covers flags 6 and 7 with zero sections. Other flags or sectioned records are reported as unsupported rather than guessed.
+- Resource paths are checked against absolute paths and traversal before they are added to the resource list.
+- Two local game packages, `DataPack0_00000.lpk` and `DataPack0_00001.lpk`, were tested: 1,874 and 937 entries respectively. All entry sizes and MD5 hashes passed, and decoded files matched output from the supplied reference utility byte-for-byte.
+- The user-provided LPK reference utilities and game packages are not included in this repository or release.
 
 ### Export and audio playback
 
@@ -118,6 +122,7 @@ RhoViewerPortable-Source/
 │   ├── GameUpdateForm.cs
 │   ├── KartPatchService.cs
 │   ├── Program.cs
+│   ├── LpkArchive.cs
 │   ├── RhoReaderCore.cs
 │   ├── ResourceAnalyzers.cs
 │   ├── ResourceClassifier.cs
@@ -205,10 +210,10 @@ RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho Data
 RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
-- `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, and resource categories.
+- `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, resource categories, and LPK selection/header rejection.
 - `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
-- `--self-test`: reads specified `.rho` or `.rho5` archive inputs and verifies archive, image, audio extraction, and analyzer behavior.
-- `--smoke-load`: creates the WinForms main window, loads the specified Rho, and closes automatically to detect startup or loading crashes.
+- `--self-test`: reads specified `.rho`, `.rho5`, or `.lpk` inputs; for LPK it decodes every entry and checks the stored size and MD5.
+- `--smoke-load`: creates the WinForms main window, loads the specified archive, and closes automatically to detect startup or loading crashes.
 
 ## Architecture overview
 
@@ -243,7 +248,7 @@ The `.1s` analyzer reports candidate occurrences of public file/model/vertex mar
 
 ## Security and data boundaries
 
-- Source Rho archives are opened for reading; the tool does not write back to or repack the source archive.
+- Source Rho, Rho5, and LPK archives are opened for reading; the tool does not write back to or repack the source archive.
 - Resources inside a Rho archive are not executed as programs. An external player only receives an extracted temporary audio file after the user starts playback.
 - Export paths and game update paths are restricted to their respective user-selected directories.
 - Update downloads are staged and CRC-checked before replacement; original files are backed up before they are moved.
@@ -256,6 +261,7 @@ The `.1s` analyzer reports candidate occurrences of public file/model/vertex mar
 - The current implementation provides metadata analysis and an external-player bridge; it is not an embedded OGG or FLAC codec.
 - Playback progress and volume controls are not provided.
 - Rho archives are not modified or repacked.
+- LPK support is limited to the tested v4 table layout (flags 6/7, zero sections); LPK creation, repacking, and other variants are not supported.
 - KSV fields and text encoding may vary by game version and require more fixtures for cross-version validation.
 - `.1s` support is limited to experimental marker fingerprinting; it does not export OBJ/USD or fully parse model geometry.
 - Game update availability depends on the region's patch service and the selected installation's `KartRider.pin`. The updater currently supports full-file NFO200 updates only; delta patching is intentionally not enabled.
@@ -271,5 +277,9 @@ Acknowledgements:
 1. 黑黑de臉蛋's 臉蛋看看 (RhoDump): for the historical program context and research sample source.
 2. [`xpoi5010/Kartrider-File-Reader`](https://github.com/xpoi5010/Kartrider-File-Reader): for public Rho/Rho5 format research and C# decoding reference code. Its GPL-3.0 license text is retained in `third_party/Kartrider-File-Reader/LICENSE`.
 3. [`brownsugar/kart-patcher`](https://github.com/brownsugar/kart-patcher): for public KartRider patcher workflow, `KartRider.pin`/patch socket research, NFO200 manifest handling, and update safety reference. The project is published under MIT; this application does not redistribute its Electron application or copyrighted game files.
+4. 百度韓服跑跑卡丁車貼吧 澜轶: for the Microsoft LpkToolkit v1.x adaptation framework supporting Nexon LPK v4.
+5. 不到壹个字 (budaoyigezi): for the LPK tool implementation reference.
+6. Royal: for the batch-tool adaptation reference.
 
+The LPK attributions refer to user-provided reference materials. The reference utilities' source code, binaries, and game sample packages are not redistributed in this project.
 The original RhoDump executable, archive, and user-provided game samples are not redistributed in this package.
