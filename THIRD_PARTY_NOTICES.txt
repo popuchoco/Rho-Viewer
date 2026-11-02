@@ -8,6 +8,9 @@ Source: https://github.com/xpoi5010/Kartrider-File-Reader
 License: GNU General Public License, version 3 (GPL-3.0)
 Local source directory:
 third_party/Kartrider-File-Reader/
+Bundled KartLibrary AssemblyVersion/FileVersion: 24.1.31.1
+Upstream revision anchor: 37fab6415360afa83e8034f8cedb2cc6766d2fe0 (2024-02-21)
+Revision evidence and limits: see third_party/Kartrider-File-Reader/UPSTREAM.md.
 
 Rho Viewer Portable uses the local KartLibrary source as the Rho archive
 decoding backend. In particular, the local file
@@ -23,7 +26,18 @@ an external audio decoder.
 The full GPL-3.0 text is included in LICENSE. The source package also keeps
 the upstream LICENSE file beside the local KartLibrary source.
 
-2. kart-patcher reference
+2. KartRider .1s marker reference
+---------------------------------
+
+Source: https://github.com/VT-Tuzki/kartrider_model_1s_to_obj
+License: MIT
+
+The read-only .1s analyzer references the public marker byte sequences
+documented by this project. No parser or exporter code is copied or bundled.
+The analyzer reports marker candidates only; it does not claim complete .1s
+format support.
+
+3. kart-patcher reference
 -------------------------
 
 Source: https://github.com/brownsugar/kart-patcher
@@ -38,7 +52,7 @@ Rho Viewer Portable does not redistribute the Electron application, game
 files, patch server content, or any private service credentials from that
 repository.
 
-3. Historical program acknowledgement
+4. Historical program acknowledgement
 --------------------------------------
 
 黑黑de臉蛋's 臉蛋看看 (RhoDump) is acknowledged for historical program

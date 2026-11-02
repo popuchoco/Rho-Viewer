@@ -13,6 +13,7 @@ internal sealed class MainForm : Form
     private readonly TreeView _resourceTree = new();
     private readonly DataGridView _fileGrid = new();
     private readonly TextBox _searchBox = new();
+    private readonly ComboBox _resourceKindFilter = new();
     private readonly ComboBox _extensionFilter = new();
     private readonly Label _breadcrumbLabel = new();
     private readonly PictureBox _previewImage = new();
@@ -48,6 +49,7 @@ internal sealed class MainForm : Form
     private bool _resizingLayout;
     private bool _layoutInitialized;
     private AppSettings _settings = AppSettings.CreateDefault();
+    private static readonly ResourceKindFilterOption AllResourceKinds = new(null, "全部類別");
 
     public MainForm()
     {
@@ -303,10 +305,13 @@ internal sealed class MainForm : Form
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
         host.Controls.Add(content);
 
-        var filterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+        var filterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 1 };
+        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50));
         filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
+        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
+        filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
         content.Controls.Add(filterPanel, 0, 0);
 
         var searchLabel = new Label { Text = "搜尋", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
@@ -316,14 +321,32 @@ internal sealed class MainForm : Form
         _searchBox.PlaceholderText = "輸入檔名、路徑或副檔名…";
         _searchBox.Margin = new Padding(0, 5, 8, 5);
         filterPanel.Controls.Add(_searchBox, 1, 0);
+
+        var kindLabel = new Label { Text = "類別", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+        filterPanel.Controls.Add(kindLabel, 2, 0);
+        _resourceKindFilter.Dock = DockStyle.Fill;
+        _resourceKindFilter.DropDownStyle = ComboBoxStyle.DropDownList;
+        _resourceKindFilter.DrawMode = DrawMode.OwnerDrawFixed;
+        _resourceKindFilter.DrawItem += DrawComboItem;
+        _resourceKindFilter.Margin = new Padding(0, 5, 8, 5);
+        _resourceKindFilter.AccessibleName = "資源類別篩選";
+        _resourceKindFilter.AccessibleDescription = "依圖片、音訊、模型、KSV 記錄或資料類型篩選";
+        _resourceKindFilter.Items.Add(AllResourceKinds);
+        _resourceKindFilter.SelectedIndex = 0;
+        filterPanel.Controls.Add(_resourceKindFilter, 3, 0);
+
+        var extensionLabel = new Label { Text = "副檔名", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+        filterPanel.Controls.Add(extensionLabel, 4, 0);
         _extensionFilter.Dock = DockStyle.Fill;
         _extensionFilter.DropDownStyle = ComboBoxStyle.DropDownList;
         _extensionFilter.DrawMode = DrawMode.OwnerDrawFixed;
         _extensionFilter.DrawItem += DrawComboItem;
         _extensionFilter.Margin = new Padding(0, 5, 0, 5);
-        _extensionFilter.Items.Add("全部類型");
+        _extensionFilter.AccessibleName = "副檔名篩選";
+        _extensionFilter.AccessibleDescription = "依資源副檔名篩選";
+        _extensionFilter.Items.Add("全部副檔名");
         _extensionFilter.SelectedIndex = 0;
-        filterPanel.Controls.Add(_extensionFilter, 2, 0);
+        filterPanel.Controls.Add(_extensionFilter, 5, 0);
 
         _breadcrumbLabel.Dock = DockStyle.Fill;
         _breadcrumbLabel.AutoEllipsis = true;
@@ -416,7 +439,7 @@ internal sealed class MainForm : Form
         _fileGrid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "封包", Width = 150, Name = "Archive" });
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源路徑", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 240, Name = "Path" });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "類型", Width = 80, Name = "Type" });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源類別", Width = 128, Name = "Type" });
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "大小", Width = 92, Name = "Size" });
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "保護方式", Width = 145, Name = "Property" });
     }
@@ -446,6 +469,7 @@ internal sealed class MainForm : Form
             }
         };
         _searchBox.TextChanged += (_, _) => ApplyFilter();
+        _resourceKindFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
         _extensionFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
         _fileGrid.SelectionChanged += async (_, _) =>
         {
@@ -992,7 +1016,27 @@ internal sealed class MainForm : Form
             var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context;
             var filterArchive = selectedArchive ?? _treeContextFilter;
             var query = _searchBox.Text.Trim();
-            var extension = _extensionFilter.SelectedItem as string ?? "全部類型";
+            var selectedKind = (_resourceKindFilter.SelectedItem as ResourceKindFilterOption)?.Kind;
+            var extension = _extensionFilter.SelectedItem as string ?? "全部副檔名";
+
+            var availableKinds = _allItems
+                .Where(item => filterArchive is null || ReferenceEquals(item.Owner, filterArchive))
+                .Select(item => item.Kind)
+                .Distinct()
+                .OrderBy(ResourceClassifier.GetSortOrder)
+                .ToList();
+            _resourceKindFilter.BeginUpdate();
+            _resourceKindFilter.Items.Clear();
+            _resourceKindFilter.Items.Add(AllResourceKinds);
+            foreach (var kind in availableKinds)
+                _resourceKindFilter.Items.Add(new ResourceKindFilterOption(kind, ResourceClassifier.GetDisplayName(kind)));
+            var selectedKindOption = _resourceKindFilter.Items
+                .Cast<ResourceKindFilterOption>()
+                .FirstOrDefault(option => option.Kind == selectedKind);
+            _resourceKindFilter.SelectedItem = selectedKindOption ?? AllResourceKinds;
+            _resourceKindFilter.EndUpdate();
+            selectedKind = (_resourceKindFilter.SelectedItem as ResourceKindFilterOption)?.Kind;
+
             var extensions = _allItems
                 .Where(item => filterArchive is null || ReferenceEquals(item.Owner, filterArchive))
                 .Select(item => item.Extension)
@@ -1003,31 +1047,32 @@ internal sealed class MainForm : Form
             var current = extension;
             _extensionFilter.BeginUpdate();
             _extensionFilter.Items.Clear();
-            _extensionFilter.Items.Add("全部類型");
+            _extensionFilter.Items.Add("全部副檔名");
             foreach (var extensionName in extensions)
                 _extensionFilter.Items.Add(extensionName);
-            _extensionFilter.SelectedItem = _extensionFilter.Items.Contains(current) ? current : "全部類型";
+            _extensionFilter.SelectedItem = _extensionFilter.Items.Contains(current) ? current : "全部副檔名";
             _extensionFilter.EndUpdate();
-            extension = _extensionFilter.SelectedItem as string ?? "全部類型";
+            extension = _extensionFilter.SelectedItem as string ?? "全部副檔名";
 
             var filtered = _allItems.Where(item =>
                     (filterArchive is null || ReferenceEquals(item.Owner, filterArchive)) &&
                     (string.IsNullOrEmpty(_selectedFolderPath) || item.RelativePath.StartsWith(_selectedFolderPath + "/", StringComparison.OrdinalIgnoreCase)) &&
-                    (string.IsNullOrEmpty(query) || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || item.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase) || item.Owner.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase)) &&
-                    (extension == "全部類型" || string.Equals(item.Extension, extension, StringComparison.OrdinalIgnoreCase)))
+                    (string.IsNullOrEmpty(query) || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || item.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase) || item.Owner.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) || ResourceClassifier.GetDisplayName(item.Kind).Contains(query, StringComparison.OrdinalIgnoreCase)) &&
+                    (selectedKind is null || item.Kind == selectedKind) &&
+                    (extension == "全部副檔名" || string.Equals(item.Extension, extension, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
 
             _fileGrid.Rows.Clear();
             foreach (var item in filtered)
             {
-                var rowIndex = _fileGrid.Rows.Add(item.Owner.DisplayName, item.RelativePath, item.Extension, FormatSize(item.Size), item.Property);
+                var rowIndex = _fileGrid.Rows.Add(item.Owner.DisplayName, item.RelativePath, $"{ResourceClassifier.GetDisplayName(item.Kind)} ({item.Extension})", FormatSize(item.Size), item.Property);
                 _fileGrid.Rows[rowIndex].Tag = item;
             }
 
             _summaryLabel.Text = $"顯示 {filtered.Count:N0} / {_allItems.Count:N0} 個資源";
             _statusLabel.Text = _contexts.Count == 0 ? "請選擇資料夾或 Rho 檔案開始。" : $"已載入 {_contexts.Count} 個封包、{_allItems.Count:N0} 個資源；目前顯示 {filtered.Count:N0} 個";
-            if (!string.IsNullOrWhiteSpace(query) || extension != "全部類型" || !string.IsNullOrEmpty(_selectedFolderPath))
-                AppLogger.Info("Filter", $"query={query}; extension={extension}; folder={_selectedFolderPath}; shown={filtered.Count}");
+            if (!string.IsNullOrWhiteSpace(query) || selectedKind is not null || extension != "全部副檔名" || !string.IsNullOrEmpty(_selectedFolderPath))
+                AppLogger.Info("Filter", $"query={query}; kind={selectedKind}; extension={extension}; folder={_selectedFolderPath}; shown={filtered.Count}");
             UpdateButtons();
         }
         finally
@@ -1121,6 +1166,13 @@ internal sealed class MainForm : Form
         builder.AppendLine();
         builder.AppendLine("資源類型：");
         foreach (var group in context.Items
+                     .GroupBy(item => item.Kind)
+                     .OrderBy(group => ResourceClassifier.GetSortOrder(group.Key)))
+        {
+            builder.AppendLine($"  {ResourceClassifier.GetDisplayName(group.Key)}：{group.Count():N0}");
+        }
+        builder.AppendLine("副檔名：");
+        foreach (var group in context.Items
                      .GroupBy(item => string.IsNullOrEmpty(item.Extension) ? "（無副檔名）" : item.Extension, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
         {
@@ -1128,7 +1180,7 @@ internal sealed class MainForm : Form
         }
 
         builder.AppendLine();
-        builder.AppendLine("請在上方清單選取資源，以查看圖片、文字、HEX 或 OGG／FLAC／KSV 分析。");
+        builder.AppendLine("請在上方清單選取資源，以查看圖片、文字、HEX、OGG／FLAC／KSV 分析或 .1s 標記探測。");
         return builder.ToString();
     }
 
@@ -1159,14 +1211,8 @@ internal sealed class MainForm : Form
 
     private static string BuildItemInfo(RhoItem item, int decodedSize)
     {
-        var kind = item.Extension switch
-        {
-            ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" => "圖片",
-            ".ogg" or ".flac" or ".wav" or ".mp3" or ".ksv" => "音訊／音效（可匯出／播放）",
-            ".bml" or ".xml" or ".json" => "結構／文字資料",
-            _ => "其他二進位資料"
-        };
-        return $"封包：{item.Owner.DisplayName}{Environment.NewLine}路徑：{item.RelativePath}{Environment.NewLine}類型：{kind} ({item.Extension}){Environment.NewLine}解碼後大小：{FormatSize(decodedSize)}{Environment.NewLine}保護方式：{item.Property}{Environment.NewLine}{(kind.StartsWith("音訊", StringComparison.Ordinal) ? "播放方式：先解出暫存檔，再交給 Players\u002f 或 Windows 預設播放器。" : "")}";
+        var kind = ResourceClassifier.GetDisplayName(item.Kind);
+        return $"封包：{item.Owner.DisplayName}{Environment.NewLine}路徑：{item.RelativePath}{Environment.NewLine}類型：{kind} ({item.Extension}){Environment.NewLine}解碼後大小：{FormatSize(decodedSize)}{Environment.NewLine}保護方式：{item.Property}{Environment.NewLine}{(item.Kind == ResourceKind.Audio ? "播放方式：先解出暫存檔，再交給 Players/ 或 Windows 預設播放器。" : "")}";
     }
 
     private static string BuildPayloadPreview(RhoItem item, byte[] bytes)
@@ -1580,8 +1626,11 @@ internal sealed class MainForm : Form
         _treeContextFilter = null;
         UpdateBreadcrumb();
         _fileGrid.Rows.Clear();
+        _resourceKindFilter.Items.Clear();
+        _resourceKindFilter.Items.Add(AllResourceKinds);
+        _resourceKindFilter.SelectedIndex = 0;
         _extensionFilter.Items.Clear();
-        _extensionFilter.Items.Add("全部類型");
+        _extensionFilter.Items.Add("全部副檔名");
         _extensionFilter.SelectedIndex = 0;
         DisposePreviewBitmap();
         _previewImage.Visible = false;
@@ -1682,6 +1731,11 @@ internal sealed class MainForm : Form
     private sealed record ArchiveListEntry(RhoArchiveContext? Context, string DisplayText)
     {
         public override string ToString() => DisplayText;
+    }
+
+    private sealed record ResourceKindFilterOption(ResourceKind? Kind, string Label)
+    {
+        public override string ToString() => Label;
     }
 
     private sealed record ResourceTreeNodeTag(RhoArchiveContext? Context, string RelativePath);

@@ -18,6 +18,7 @@ internal static class ResourceAnalyzers
             ".ksv" => AnalyzeKsv(data),
             ".ogg" => AnalyzeOgg(data),
             ".flac" => AnalyzeFlac(data),
+            ".1s" => OneSAnalyzer.Analyze(data),
             _ => ""
         };
     }

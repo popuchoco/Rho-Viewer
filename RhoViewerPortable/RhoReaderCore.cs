@@ -90,6 +90,7 @@ internal sealed class RhoItem
     public string RelativePath { get; }
     public string Name => File.Name;
     public string Extension => System.IO.Path.GetExtension(Name).ToLowerInvariant();
+    public ResourceKind Kind => ResourceClassifier.Classify(Extension);
     public int Size => File.Size;
     public string Property => File.FileEncryptionProperty.ToString();
 

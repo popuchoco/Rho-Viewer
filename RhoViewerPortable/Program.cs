@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using KartLibrary.File;
 
@@ -272,7 +273,22 @@ internal static class FormatSelfTest
             if (!ksvSummary.Contains("KSV", StringComparison.Ordinal))
                 throw new InvalidDataException("KSV fallback test failed.");
 
-            Console.WriteLine("OK format analyzers: FLAC synthetic, OGG rejection, KSV fallback");
+            var oneSSummary = ResourceAnalyzers.AnalyzeExtension(".1s", BuildMinimalOneS());
+            if (!oneSSummary.Contains("FILE_HEADER：1 個", StringComparison.Ordinal) ||
+                !oneSSummary.Contains("候選宣告模組數：2", StringComparison.Ordinal) ||
+                !oneSSummary.Contains("VERTEX_COORDINATES_HEADER：1 個", StringComparison.Ordinal))
+                throw new InvalidDataException(".1s marker-probe synthetic test failed.");
+
+            var unknownOneSSummary = ResourceAnalyzers.AnalyzeExtension(".1s", Array.Empty<byte>());
+            if (!unknownOneSSummary.Contains("不能僅憑此結果判定檔案無效", StringComparison.Ordinal))
+                throw new InvalidDataException(".1s unknown-variant fallback test failed.");
+
+            if (ResourceClassifier.Classify(".ksv") != ResourceKind.Recording ||
+                ResourceClassifier.Classify(".1s") != ResourceKind.Model ||
+                ResourceClassifier.Classify(".ogg") != ResourceKind.Audio)
+                throw new InvalidDataException("Resource classification synthetic test failed.");
+
+            Console.WriteLine("OK format analyzers: FLAC synthetic, OGG rejection, KSV fallback, .1s marker probe; resource categories");
             return 0;
         }
         catch (Exception ex)
@@ -302,6 +318,17 @@ internal static class FormatSelfTest
         streamInfo[17] = 0x01;
         for (var i = 18; i < 34; i++)
             streamInfo[i] = (byte)i;
+        return result;
+    }
+
+    private static byte[] BuildMinimalOneS()
+    {
+        var result = new byte[40];
+        new byte[] { 0xAA, 0x47, 0x49, 0x02, 0x8C, 0x07 }.CopyTo(result, 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(12, 4), 2);
+        new byte[] { 0xAA, 0x47, 0x3C, 0x03, 0x07, 0x0E }.CopyTo(result, 16);
+        new byte[] { 0xAA, 0x47, 0x46, 0x04, 0x2A, 0x19 }.CopyTo(result, 22);
+        new byte[] { 0xAA, 0x27 }.CopyTo(result, 32);
         return result;
     }
 }

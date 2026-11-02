@@ -28,7 +28,7 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Display archive name, resource path, type, size, and protection method.
 - Show loaded archives and the internal folder tree on the left, with a breadcrumb and resource list on the right.
 - Preserve the original archive order for the resource list and folder tree; manual sorting is intentionally not provided.
-- Filter by file name, path, or extension.
+- Filter by file name, path, archive name, resource category, or extension. Category and extension filters can be combined.
 - Support Select All, Invert Selection, and the `Ctrl+F`, `Ctrl+A`, `Ctrl+I`, `Ctrl+E`, and `Esc` shortcuts.
 
 ### Resource preview and analysis
@@ -36,6 +36,8 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Preview PNG, JPG/JPEG, BMP, and GIF images.
 - Provide text and HEX fallback views for text and unknown binary resources.
 - Attempt to parse KSV recording title, track, event type, recorder, player, and recording data sections.
+- Classify KSV recordings separately from audio, and classify `.1s` resources as model/scene resources.
+- Probe `.1s` files for public model-format marker candidates and a declared module count when the file header is present. This is a read-only format fingerprint, not a complete decoder or validity check.
 - Identify Ogg/Vorbis and Opus streams and report channels, sample rate, estimated duration, and tags.
 - Read FLAC STREAMINFO, channels, sample rate, bit depth, estimated duration, and Vorbis comments.
 - Clearly distinguish a valid empty archive from a load or parsing failure.
@@ -74,6 +76,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Interface and settings
 
 - Use a fixed light theme for predictable native WinForms contrast.
+- Present the current interface in Traditional Chinese (zh-TW); selectable additional locales are not implemented yet.
 - Use PerMonitorV2 high-DPI support.
 - Resize the left and right layout with the window while preserving the splitter ratio and usable minimum widths.
 - Save the normal window size and splitter ratio when the application closes normally.
@@ -110,6 +113,8 @@ RhoViewerPortable-Source/
 │   ├── Program.cs
 │   ├── RhoReaderCore.cs
 │   ├── ResourceAnalyzers.cs
+│   ├── ResourceClassifier.cs
+│   ├── OneSAnalyzer.cs
 │   ├── AppSettings.cs
 │   ├── AppLogger.cs
 │   ├── SettingsForm.cs
@@ -191,7 +196,7 @@ RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho
 RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
-- `--format-self-test`: tests synthetic FLAC, invalid OGG handling, and the KSV fallback path.
+- `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, and resource categories.
 - `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
 - `--self-test`: reads specified Rho files and verifies archive, image, audio extraction, and analyzer behavior.
 - `--smoke-load`: creates the WinForms main window, loads the specified Rho, and closes automatically to detect startup or loading crashes.
@@ -206,7 +211,11 @@ MainForm (WinForms UI)
 ├── ResourceAnalyzers
 │   ├── KSV summary
 │   ├── OGG Vorbis / Opus metadata
-│   └── FLAC metadata
+│   ├── FLAC metadata
+│   └── `.1s` marker probe
+├── ResourceClassifier
+│   ├── image / audio / model-scene / KSV / structured-data categories
+│   └── independent of the original archive folder hierarchy
 ├── GameUpdateForm
 │   └── KartPatchService
 │       ├── KartRider.pin parser
@@ -220,6 +229,8 @@ MainForm (WinForms UI)
 ```
 
 The RhoKey table is stored locally at `third_party/Kartrider-File-Reader/src/KartriderLibrary/Encrypt/RhoKey.cs`. The application does not read a GitHub raw URL at runtime and does not require a remote key service.
+
+The `.1s` analyzer reports candidate occurrences of public file/model/vertex markers and a declared module count where the file header permits it. Marker definitions are referenced from the MIT-licensed `VT-Tuzki/kartrider_model_1s_to_obj` project; no parser or exporter code is copied. It does not decode meshes, materials, animations, or reliably determine whether a model is a track, character, or kart. See `THIRD_PARTY_NOTICES.txt` and `third_party/Kartrider-File-Reader/UPSTREAM.md` for dependency provenance and license details.
 
 ## Security and data boundaries
 
@@ -237,6 +248,7 @@ The RhoKey table is stored locally at `third_party/Kartrider-File-Reader/src/Kar
 - Playback progress and volume controls are not provided.
 - Rho archives are not modified or repacked.
 - KSV fields and text encoding may vary by game version and require more fixtures for cross-version validation.
+- `.1s` support is limited to experimental marker fingerprinting; it does not export OBJ/USD or fully parse model geometry.
 - Game update availability depends on the region's patch service and the selected installation's `KartRider.pin`. The updater currently supports full-file NFO200 updates only; delta patching is intentionally not enabled.
 - Actual audio playback depends on the user's installed player and codecs.
 - The true OEP, IAT repair, and inner code-level restoration of the original `黑黑de臉蛋 (RhoDump)` executable still require an isolated VM. This project does not claim to restore its original source code.
