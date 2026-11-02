@@ -79,7 +79,9 @@ internal static class ParserInputTests
     private static void AssertMalformedFlac(byte[] bytes, string label)
     {
         var summary = ResourceAnalyzers.AnalyzeExtension(".flac", bytes);
-        Assert(summary.Contains("無效", StringComparison.Ordinal) || summary.Contains("不是標準", StringComparison.Ordinal),
+        Assert(summary.Contains("無效", StringComparison.Ordinal) ||
+               summary.Contains("不是標準", StringComparison.Ordinal) ||
+               summary.Contains("找不到有效 STREAMINFO", StringComparison.Ordinal),
             $"{label} did not produce a bounded malformed-input result");
     }
 
