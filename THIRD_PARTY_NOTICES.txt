@@ -23,6 +23,10 @@ OGG and FLAC metadata summaries in this application are local, lightweight
 container readers layered on top of decoded resource bytes; they do not copy
 an external audio decoder.
 
+The vendored reader has downstream changes for legacy Rho block-checksum
+validation and Rho5 ordered duplicate-entry handling, exact decompression
+length, and per-entry MD5 validation. These changes remain subject to GPL-3.0.
+
 The full GPL-3.0 text is included in LICENSE. The source package also keeps
 the upstream LICENSE file beside the local KartLibrary source.
 

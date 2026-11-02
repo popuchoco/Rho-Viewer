@@ -260,6 +260,16 @@ internal sealed class RhoItem
         var bytes = _readBytes();
         if (bytes.Length > MaxMaterializedBytes)
             throw new InvalidDataException($"資源 {RelativePath} 解碼後超過單次載入上限 {MaxMaterializedBytes:N0} bytes。");
+
+        // Rho 1.0/1.1 may return a shared partial-encryption block that includes
+        // bytes belonging to the following block. The directory's per-file size
+        // is authoritative; trim that legacy padding before preview/export.
+        if (bytes.Length > Size && Owner.LayerVersion.StartsWith("Rh layer", StringComparison.OrdinalIgnoreCase))
+            Array.Resize(ref bytes, Size);
+
+        if (bytes.Length != Size)
+            throw new InvalidDataException($"資源 {RelativePath} 解碼長度不符：宣告 {Size:N0} bytes，實際 {bytes.Length:N0} bytes。");
+
         return bytes;
     }
 

@@ -43,10 +43,7 @@ internal sealed class MainForm : Form
     private Bitmap? _currentBitmap;
     private int _previewGeneration;
     private bool _busy;
-    private bool _updatingFilters;
-    private bool _rebuildingTree;
-    private bool _selectionUpdating;
-    private bool _resizingLayout;
+    private readonly UiMutationTracker _uiMutations = new();
     private bool _layoutInitialized;
     private AppSettings _settings = AppSettings.CreateDefault();
     private static readonly ResourceKindFilterOption AllResourceKinds = new(null, "全部類別");
@@ -457,7 +454,7 @@ internal sealed class MainForm : Form
         };
         _resourceTree.AfterSelect += (_, e) =>
         {
-            if (_rebuildingTree)
+            if (_uiMutations.IsActive(UiMutationKind.ResourceTreeRebuild))
                 return;
 
             if (e.Node is not null && e.Node.Tag is ResourceTreeNodeTag tag)
@@ -474,7 +471,7 @@ internal sealed class MainForm : Form
         _fileGrid.SelectionChanged += async (_, _) =>
         {
             UpdateButtons();
-            if (_selectionUpdating)
+            if (_uiMutations.IsActive(UiMutationKind.SelectionBatch))
                 return;
             await PreviewSelectedAsync();
         };
@@ -495,22 +492,15 @@ internal sealed class MainForm : Form
 
     private void ApplyResponsiveLayout()
     {
-        if (!_layoutInitialized || _resizingLayout || _mainSplit.ClientSize.Width <= 0)
+        if (!_layoutInitialized || _uiMutations.IsActive(UiMutationKind.LayoutResize) || _mainSplit.ClientSize.Width <= 0)
             return;
 
-        _resizingLayout = true;
-        try
-        {
-            var availableWidth = _mainSplit.ClientSize.Width;
-            var minimum = _mainSplit.Panel1MinSize;
-            var maximum = Math.Max(minimum, availableWidth - _mainSplit.Panel2MinSize - _mainSplit.SplitterWidth);
-            var target = (int)Math.Round(availableWidth * _settings.SplitterRatio);
-            _mainSplit.SplitterDistance = Math.Clamp(target, minimum, maximum);
-        }
-        finally
-        {
-            _resizingLayout = false;
-        }
+        using var layoutUpdate = _uiMutations.Enter(UiMutationKind.LayoutResize);
+        var availableWidth = _mainSplit.ClientSize.Width;
+        var minimum = _mainSplit.Panel1MinSize;
+        var maximum = Math.Max(minimum, availableWidth - _mainSplit.Panel2MinSize - _mainSplit.SplitterWidth);
+        var target = (int)Math.Round(availableWidth * _settings.SplitterRatio);
+        _mainSplit.SplitterDistance = Math.Clamp(target, minimum, maximum);
     }
 
     private void CaptureSplitterRatio()
@@ -636,15 +626,8 @@ internal sealed class MainForm : Form
         if (_busy || _fileGrid.Rows.Count == 0)
             return;
 
-        _selectionUpdating = true;
-        try
-        {
+        using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
             _fileGrid.SelectAll();
-        }
-        finally
-        {
-            _selectionUpdating = false;
-        }
         UpdateButtons();
     }
 
@@ -653,15 +636,10 @@ internal sealed class MainForm : Form
         if (_busy || _fileGrid.Rows.Count == 0)
             return;
 
-        _selectionUpdating = true;
-        try
+        using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
         {
             foreach (DataGridViewRow row in _fileGrid.Rows)
                 row.Selected = !row.Selected;
-        }
-        finally
-        {
-            _selectionUpdating = false;
         }
         UpdateButtons();
         _ = PreviewSelectedAsync();
@@ -917,7 +895,7 @@ internal sealed class MainForm : Form
 
     private void RefreshResourceTree()
     {
-        _rebuildingTree = true;
+        using var treeUpdate = _uiMutations.Enter(UiMutationKind.ResourceTreeRebuild);
         _resourceTree.BeginUpdate();
         try
         {
@@ -951,7 +929,6 @@ internal sealed class MainForm : Form
         finally
         {
             _resourceTree.EndUpdate();
-            _rebuildingTree = false;
         }
     }
 
@@ -1010,11 +987,10 @@ internal sealed class MainForm : Form
 
     private void ApplyFilter()
     {
-        if (_updatingFilters || _archiveList.Items.Count == 0)
+        if (_uiMutations.IsActive(UiMutationKind.FilterControls) || _archiveList.Items.Count == 0)
             return;
 
-        _updatingFilters = true;
-        try
+        using (_uiMutations.Enter(UiMutationKind.FilterControls))
         {
             var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context;
             var filterArchive = selectedArchive ?? _treeContextFilter;
@@ -1029,15 +1005,21 @@ internal sealed class MainForm : Form
                 .OrderBy(ResourceClassifier.GetSortOrder)
                 .ToList();
             _resourceKindFilter.BeginUpdate();
-            _resourceKindFilter.Items.Clear();
-            _resourceKindFilter.Items.Add(AllResourceKinds);
-            foreach (var kind in availableKinds)
-                _resourceKindFilter.Items.Add(new ResourceKindFilterOption(kind, ResourceClassifier.GetDisplayName(kind)));
-            var selectedKindOption = _resourceKindFilter.Items
-                .Cast<ResourceKindFilterOption>()
-                .FirstOrDefault(option => option.Kind == selectedKind);
-            _resourceKindFilter.SelectedItem = selectedKindOption ?? AllResourceKinds;
-            _resourceKindFilter.EndUpdate();
+            try
+            {
+                _resourceKindFilter.Items.Clear();
+                _resourceKindFilter.Items.Add(AllResourceKinds);
+                foreach (var kind in availableKinds)
+                    _resourceKindFilter.Items.Add(new ResourceKindFilterOption(kind, ResourceClassifier.GetDisplayName(kind)));
+                var selectedKindOption = _resourceKindFilter.Items
+                    .Cast<ResourceKindFilterOption>()
+                    .FirstOrDefault(option => option.Kind == selectedKind);
+                _resourceKindFilter.SelectedItem = selectedKindOption ?? AllResourceKinds;
+            }
+            finally
+            {
+                _resourceKindFilter.EndUpdate();
+            }
             selectedKind = (_resourceKindFilter.SelectedItem as ResourceKindFilterOption)?.Kind;
 
             var extensions = _allItems
@@ -1049,12 +1031,18 @@ internal sealed class MainForm : Form
                 .ToList();
             var current = extension;
             _extensionFilter.BeginUpdate();
-            _extensionFilter.Items.Clear();
-            _extensionFilter.Items.Add("全部副檔名");
-            foreach (var extensionName in extensions)
-                _extensionFilter.Items.Add(extensionName);
-            _extensionFilter.SelectedItem = _extensionFilter.Items.Contains(current) ? current : "全部副檔名";
-            _extensionFilter.EndUpdate();
+            try
+            {
+                _extensionFilter.Items.Clear();
+                _extensionFilter.Items.Add("全部副檔名");
+                foreach (var extensionName in extensions)
+                    _extensionFilter.Items.Add(extensionName);
+                _extensionFilter.SelectedItem = _extensionFilter.Items.Contains(current) ? current : "全部副檔名";
+            }
+            finally
+            {
+                _extensionFilter.EndUpdate();
+            }
             extension = _extensionFilter.SelectedItem as string ?? "全部副檔名";
 
             var filtered = _allItems.Where(item =>
@@ -1077,10 +1065,6 @@ internal sealed class MainForm : Form
             if (!string.IsNullOrWhiteSpace(query) || selectedKind is not null || extension != "全部副檔名" || !string.IsNullOrEmpty(_selectedFolderPath))
                 AppLogger.Info("Filter", $"query={query}; kind={selectedKind}; extension={extension}; folder={_selectedFolderPath}; shown={filtered.Count}");
             UpdateButtons();
-        }
-        finally
-        {
-            _updatingFilters = false;
         }
     }
 

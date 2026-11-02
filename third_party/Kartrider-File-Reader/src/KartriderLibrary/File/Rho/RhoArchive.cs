@@ -417,20 +417,34 @@ namespace KartLibrary.File
         {
             if (!_dataInfoMap.ContainsKey(dataIndex))
                 throw new Exception("index not exist.");
-            FileStream clonedRhoStream = new FileStream(_rhoStream.SafeFileHandle, FileAccess.Read);
+            using FileStream clonedRhoStream = new FileStream(_rhoStream.SafeFileHandle, FileAccess.Read);
             RhoDataInfo dataInfo = _dataInfoMap[dataIndex];
+
+            const int maxResourceBytes = 256 * 1024 * 1024;
+            if (dataInfo.DataSize < 0 || dataInfo.DataSize > maxResourceBytes ||
+                dataInfo.UncompressedSize < 0 || dataInfo.UncompressedSize > maxResourceBytes)
+                throw new InvalidDataException($"Rho resource size is outside the supported range (index 0x{dataIndex:X8}).");
 
             clonedRhoStream.Seek(dataInfo.Offset, SeekOrigin.Begin);
             byte[] outData = new byte[dataInfo.DataSize];
-            clonedRhoStream.Read(outData, 0, dataInfo.DataSize);
+            ReadExactly(clonedRhoStream, outData, 0, outData.Length);
             
             if ((dataInfo.BlockProperty & RhoBlockProperty.Compressed) != RhoBlockProperty.None)
             {
                 using(MemoryStream memStream = new MemoryStream(outData))
                 {
                     outData = new byte[dataInfo.UncompressedSize];
-                    Ionic.Zlib.ZlibStream decompressStream = new Ionic.Zlib.ZlibStream(memStream, Ionic.Zlib.CompressionMode.Decompress);
-                    int readed = decompressStream.Read(outData, 0, outData.Length);
+                    using Ionic.Zlib.ZlibStream decompressStream = new Ionic.Zlib.ZlibStream(memStream, Ionic.Zlib.CompressionMode.Decompress);
+                    var position = 0;
+                    while (position < outData.Length)
+                    {
+                        var read = decompressStream.Read(outData, position, outData.Length - position);
+                        if (read == 0)
+                            throw new InvalidDataException($"Rho resource ended before its declared size ({position}/{outData.Length} bytes).");
+                        position += read;
+                    }
+                    if (decompressStream.ReadByte() != -1)
+                        throw new InvalidDataException("Rho resource expands beyond its declared size.");
                 }
             }
             if((dataInfo.BlockProperty & RhoBlockProperty.PartialEncrypted) != RhoBlockProperty.None)
@@ -443,10 +457,26 @@ namespace KartLibrary.File
                 if(secDatainfo is not null)
                 {
                     Array.Resize(ref outData, outData.Length + secDatainfo.DataSize);
-                    clonedRhoStream.Read(outData, dataInfo.DataSize, secDatainfo.DataSize);
+                    ReadExactly(clonedRhoStream, outData, dataInfo.DataSize, secDatainfo.DataSize);
                 }
             }
+
+            if (dataInfo.Checksum != 0 && Adler.Adler32(0, outData, 0, outData.Length) != dataInfo.Checksum)
+                throw new InvalidDataException($"Rho resource checksum verification failed (index 0x{dataIndex:X8}).");
+
             return outData;
+        }
+
+        private static void ReadExactly(Stream stream, byte[] buffer, int offset, int count)
+        {
+            while (count > 0)
+            {
+                var read = stream.Read(buffer, offset, count);
+                if (read == 0)
+                    throw new EndOfStreamException("Rho resource data is truncated.");
+                offset += read;
+                count -= read;
+            }
         }
 
         private void storeFolderAndFiles(RhoFolder folder, Queue<DataSavingInfo> savingInfo, HashSet<uint> usedIndex, ref int dataOffset, uint outRhoKey)

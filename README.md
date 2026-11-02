@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.2` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.3` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -26,6 +26,8 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Select `.rho` files directly; opening any `.rho5` part loads its complete same-prefix data-pack set.
 - Open each `.lpk` package independently; LPK decryption keys depend on the original package filename.
 - Read Nexon KartRider LPK v4 resource tables and decrypt/extract entries with flags 6/7 and zero sections; verify decoded resource size and MD5 before use.
+- Validate legacy Rho decoded block checksums and return only each resource's declared byte range; Rho5 verifies exact decompressed length and its per-entry MD5.
+- Treat repeated file paths in numbered Rho5 parts as ordered overlays, so a later part replaces an earlier duplicate instead of making the whole set unreadable.
 - Drag a directory or supported archive files into the window.
 - Decrypt legacy Rho5 resources using the vendored KartRider-File-Reader implementation; use the saved TW/KR/CN region setting or detect the region from a nearby `KartRiderTW.ini`, `KartRiderKR.ini`, or `KartRiderCN.ini`.
 - Display archive name, resource path, type, size, and protection method.
@@ -109,7 +111,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
-2. Download `RhoViewerPortable_v0.3.2_win-x64.zip` from the [v0.3.2 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.2) and extract it.
+2. Download `RhoViewerPortable_v0.3.3_win-x64.zip` from the [v0.3.3 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.3) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -141,6 +143,9 @@ RhoViewerPortable-Source/
 │   ├── AppLogger.cs
 │   ├── SettingsForm.cs
 │   └── app.manifest
+├── RhoViewerPortable.Tests/
+│   ├── RhoViewerPortable.Tests.csproj
+│   └── Program.cs
 └── third_party/
     └── Kartrider-File-Reader/
 ```
@@ -157,7 +162,23 @@ RhoViewerPortable-Source/
 
 - A Windows x64 development environment.
 - .NET 10 SDK and Windows Desktop SDK.
-- The first build requires NuGet package restore. After restore is complete, offline Rho parsing self-tests do not require network access.
+- The first build requires NuGet package restore. After restore is complete, offline parser and updater self-tests do not require network access.
+
+### Run independent tests
+
+The separate test runner covers malformed OGG/FLAC inputs, update-path/manifest/rollback checks, CRC, and UI mutation scopes:
+
+```powershell
+dotnet run --project RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj --configuration Release
+```
+
+To decode and read **every entry** from real game archives, pass one or more data roots. The corpus test opens each `.rho` and `.lpk` archive independently, groups numbered `.rho5` parts, reads every resource, and checks the declared decoded size; LPK/Rho5 MD5 and Rho block checksums are also verified by the readers. It is read-only and does not write to the game directories.
+
+```powershell
+dotnet run --project RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj --configuration Release -- --archive-corpus "D:\Game\KartRider\Data" "D:\OldTW\M01\Data"
+```
+
+Real game data is not bundled with the repository or CI artifacts. CI runs the deterministic synthetic tests; the real-data corpus command is intended for a local machine that has the relevant installations.
 
 ## Configuration and logs
 
@@ -211,21 +232,17 @@ dotnet publish RhoViewerPortable\\RhoViewerPortable.csproj `
 
 The GitHub Actions CI workflow builds the Windows x64 portable package, runs offline parser/updater self-tests, and attaches the publish directory to the workflow run as an artifact (retained for 14 days). Version tags publish the ZIP as a GitHub Release asset. Download and extract the complete ZIP; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 10 Desktop Runtime.
 
-## Offline self-tests
+## Archive smoke tests
 
 ```powershell
-RhoViewerPortable.exe --format-self-test
-RhoViewerPortable.exe --kart-crc-self-test
-RhoViewerPortable.exe --security-self-test
 RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho DataPack1_00000.rho5
 RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
-- `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, resource categories, and LPK selection/header rejection.
-- `--security-self-test`: checks that automatic HTTP decompression stays disabled, discovery-origin confinement, NFO200 CSV/size/path validation, Windows path normalization, and backup rollback behavior without network access.
-- `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
-- `--self-test`: reads specified `.rho`, `.rho5`, or `.lpk` inputs; for LPK it decodes every entry and checks the stored size and MD5.
+- `--self-test`: opens specified `.rho`, `.rho5`, or `.lpk` archives and checks representative decoded image/audio resources; for LPK it reads every entry and checks the stored size and MD5.
 - `--smoke-load`: creates the WinForms main window, loads the specified archive, and closes automatically to detect startup or loading crashes.
+
+For independent malformed-input, updater-security, CRC, UI-state, and complete archive-corpus tests, use the separate `RhoViewerPortable.Tests` project documented above. This keeps test-only switches out of the released application.
 
 ## Architecture overview
 

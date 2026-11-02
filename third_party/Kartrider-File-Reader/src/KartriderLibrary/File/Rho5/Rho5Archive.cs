@@ -50,7 +50,9 @@ namespace KartLibrary.File
             if (!Directory.Exists(dataPackPath))
                 throw new Exception($"{dataPackPath} doesn't exists.");
             DirectoryInfo dataPackDir = new DirectoryInfo(dataPackPath);
-            foreach (FileInfo fileInfo in dataPackDir.GetFiles())
+            // Parts are an ordered overlay. A later part can contain a replacement
+            // resource with the same path, so process them in numeric filename order.
+            foreach (FileInfo fileInfo in dataPackDir.GetFiles().OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase))
             {
                 Regex parrern = new Regex($@"^{dataPackName}_(\d{{5}})\.rho5$");
                 Match match = parrern.Match(fileInfo.Name);
@@ -208,6 +210,18 @@ namespace KartLibrary.File
                     }
                     curFolder = curFolder.GetFolder(curFolderName);
                 }
+                // Nexon's live pack sets can repeat a resource path in a later
+                // part. Keep the later part's entry instead of failing the whole
+                // archive; the previous file handler is no longer reachable.
+                if (_rootFolder.ContainsFile(fileFullPath))
+                {
+                    var previousFile = _rootFolder.GetFile(fileFullPath);
+                    previousFile?.Parent?.RemoveFile(previousFile);
+                    if (_fileHandlers.TryGetValue(fileFullPath, out var previousHandler))
+                        previousHandler.releaseHandler();
+                    _fileHandlers.Remove(fileFullPath);
+                }
+
                 Rho5File rho5File = new Rho5File();
                 rho5File.DataSource = new Rho5DataSource(fileHandler);
                 rho5File.Name = splitedPath[^1];
@@ -439,22 +453,52 @@ namespace KartLibrary.File
             FileStream rho5Stream = _rho5Streams[handler._dataPackID];
             if (rho5Stream is null || !rho5Stream.CanRead)
                 throw new Exception("");
-            FileStream clonedStream = new FileStream(rho5Stream.SafeFileHandle, FileAccess.Read);
+            using FileStream clonedStream = new FileStream(rho5Stream.SafeFileHandle, FileAccess.Read);
             Rho5DecryptStream decryptStream = new Rho5DecryptStream(clonedStream, handler._key);
+            const int maxResourceBytes = 256 * 1024 * 1024;
+            if (handler._compressedSize < 0 || handler._compressedSize > maxResourceBytes ||
+                handler._decompressedSize < 0 || handler._decompressedSize > maxResourceBytes)
+                throw new InvalidDataException($"Rho5 resource size is outside the supported range (part {handler._dataPackID}, block {handler._offset}).");
             int offset = _dataBeginPoses[handler._dataPackID] + (handler._offset << 10);
             decryptStream.Seek(offset, SeekOrigin.Begin);
             byte[] compressedData = new byte[handler._compressedSize];
             byte[] decompressedData = new byte[handler._decompressedSize];
-            decryptStream.Read(compressedData, 0, compressedData.Length >= 0x400 ? 0x400 : compressedData.Length);
+            ReadExactly(decryptStream, compressedData, 0, compressedData.Length >= 0x400 ? 0x400 : compressedData.Length);
             if (compressedData.Length >= 0x400)
-                clonedStream.Read(compressedData, 0x400, compressedData.Length - 0x400);
+                ReadExactly(clonedStream, compressedData, 0x400, compressedData.Length - 0x400);
             using (MemoryStream memStream = new MemoryStream(compressedData))
             {
                 decryptStream = new Rho5DecryptStream(memStream, handler._key);
-                Ionic.Zlib.ZlibStream decompressStream = new Ionic.Zlib.ZlibStream(decryptStream, Ionic.Zlib.CompressionMode.Decompress);
-                decompressStream.Read(decompressedData, 0, decompressedData.Length);
+                using Ionic.Zlib.ZlibStream decompressStream = new Ionic.Zlib.ZlibStream(decryptStream, Ionic.Zlib.CompressionMode.Decompress);
+                var position = 0;
+                while (position < decompressedData.Length)
+                {
+                    var read = decompressStream.Read(decompressedData, position, decompressedData.Length - position);
+                    if (read == 0)
+                        throw new InvalidDataException($"Rho5 resource ended before its declared size ({position}/{decompressedData.Length} bytes).");
+                    position += read;
+                }
+                if (decompressStream.ReadByte() != -1)
+                    throw new InvalidDataException("Rho5 resource expands beyond its declared size.");
             }
+
+            if (handler._fileChksum is null || handler._fileChksum.Length != 16 ||
+                !CryptographicOperations.FixedTimeEquals(MD5.HashData(decompressedData), handler._fileChksum))
+                throw new InvalidDataException($"Rho5 resource MD5 verification failed (part {handler._dataPackID}, block {handler._offset}).");
+
             return decompressedData;
+        }
+
+        private static void ReadExactly(Stream stream, byte[] buffer, int offset, int count)
+        {
+            while (count > 0)
+            {
+                var read = stream.Read(buffer, offset, count);
+                if (read == 0)
+                    throw new EndOfStreamException("Rho5 resource data is truncated.");
+                offset += read;
+                count -= read;
+            }
         }
         #endregion
 

@@ -23,19 +23,21 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Restore
-        run: dotnet restore RhoViewerPortable/RhoViewerPortable.csproj
+        run: dotnet restore RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj
 
       - name: Build
-        run: dotnet build RhoViewerPortable/RhoViewerPortable.csproj --configuration Release --no-restore
+        run: dotnet build RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj --configuration Release --no-restore
 
-      - name: Run format and resource analyzer self-tests
-        run: dotnet RhoViewerPortable/bin/Release/net10.0-windows/RhoViewerPortable.dll --format-self-test
+      - name: Run independent parser, updater security, CRC, and UI-state tests
+        run: dotnet RhoViewerPortable.Tests/bin/Release/net10.0-windows/RhoViewerPortable.Tests.dll
 
-      - name: Run Kart CRC self-test
-        run: dotnet RhoViewerPortable/bin/Release/net10.0-windows/RhoViewerPortable.dll --kart-crc-self-test
-
-      - name: Run updater security self-tests
-        run: dotnet RhoViewerPortable/bin/Release/net10.0-windows/RhoViewerPortable.dll --security-self-test
+      - name: Upload test runner for local real-data validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rho-Viewer-Tests-win-x64
+          path: RhoViewerPortable.Tests/bin/Release/net10.0-windows/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Publish Windows x64 portable package
         run: >-
