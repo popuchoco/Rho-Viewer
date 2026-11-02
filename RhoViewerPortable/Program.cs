@@ -412,11 +412,12 @@ internal static class SecuritySelfTest
     {
         try
         {
+            TestBrotliDecompressionDisabled();
             TestPatchEndpointConfinement();
             TestManifestValidation();
             TestPatchPathValidation();
             TestRollback();
-            Console.WriteLine("OK security checks: discovery-origin confinement, bounded NFO200 parsing, safe paths, rollback restoration");
+            Console.WriteLine("OK security checks: Brotli auto-decompression disabled, discovery-origin confinement, bounded NFO200 parsing, safe paths, rollback restoration");
             return 0;
         }
         catch (Exception ex)
@@ -424,6 +425,13 @@ internal static class SecuritySelfTest
             Console.Error.WriteLine($"FAIL security self-tests: {ex.Message}");
             return 1;
         }
+    }
+
+    private static void TestBrotliDecompressionDisabled()
+    {
+        using var handler = KartPatchService.CreateHttpClientHandler();
+        if (handler.AutomaticDecompression != System.Net.DecompressionMethods.None)
+            throw new InvalidDataException("HttpClient automatic content decompression must remain disabled.");
     }
 
     private static void TestPatchEndpointConfinement()

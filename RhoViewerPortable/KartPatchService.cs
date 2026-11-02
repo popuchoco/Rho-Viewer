@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -684,11 +685,20 @@ internal sealed class KartPatchService
 
     private static HttpClient CreateHttpClient()
     {
-        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var handler = CreateHttpClientHandler();
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RhoViewerPortable", "0.3.1"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RhoViewerPortable", "0.3.2"));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain"));
         return client;
+    }
+
+    internal static HttpClientHandler CreateHttpClientHandler()
+    {
+        return new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.None
+        };
     }
 }
 

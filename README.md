@@ -8,9 +8,9 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.1` — framework-dependent `win-x64` portable release. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.2` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
-The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 8 Desktop Runtime for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
+The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
 ## Legal, EULA, and data-use notice
 
@@ -84,6 +84,12 @@ For example, a file originally located at `Data\\aaa.pk` is backed up under the 
 
 The updater follows the public `brownsugar/kart-patcher` discovery flow: it reads `KartRider.pin`, connects to the selected region's patch socket, then uses the socket-provided endpoint (falling back to the pin's `officialPatchUrl` only when the socket response is empty). HTTP requests and redirects are constrained to that discovered endpoint's exact origin; no generic Nexon domain suffixes are assumed. The known TW/KR/CN socket host/port mappings are based on the same project's region presets. NFO200 input is capped at 16 MiB/100,000 records; each compressed/uncompressed file is capped at 16 GiB and a plan at 128 GiB. Downloaded compressed size and bounded decompressed size must match the manifest before apply. Existing reparse points in updater destination paths are rejected. These checks reduce symlink/junction escape risks but do not make updates atomic against another process concurrently changing the selected game directory.
 
+### Runtime security baseline
+
+- The application targets `net10.0-windows` and its framework-dependent runtime configuration requires .NET 10.0.14 or later servicing patches. This includes the .NET Brotli decoder fix for CVE-2026-111497; .NET 8 and 9 reach end of support on November 10, 2026, so this release moves to .NET 10 LTS.
+- The updater does not enable `HttpClient` automatic response decompression and explicitly sets it to `None`; application code does not call Brotli decompression APIs. Patch payloads use bounded GZip decompression only. The runtime baseline still matters for future framework code paths and other dependencies.
+- The NICS August 2026 Microsoft alert includes CVE-2026-62872 for **.NET Framework**, which is distinct from the modern .NET runtime used by this app. The app does not use .NET Framework; Windows and .NET Framework security updates remain the user's OS-maintenance responsibility. See the [NICS alert](https://www.nics.nat.gov.tw/core_business/information_security_information_sharing/Vulnerability_Alert_Announcements/8c0320ef-33cc-4376-955e-81f7750ad160/), [iThome report](https://www.ithome.com.tw/news/179970), and Microsoft's [.NET OOB update](https://devblogs.microsoft.com/dotnet/dotnet-october-2026-oob-security-updates/).
+
 The first implementation intentionally uses full-file updates only. It does not invoke `Patcher.exe` or apply delta patches. The patch service must still be available for the selected region; a historical or discontinued service may be unreachable and is not replaced by this application.
 
 The update workflow is informed by the public [`brownsugar/kart-patcher`](https://github.com/brownsugar/kart-patcher) project. That project provides client-side patcher research and implementation references; it does not redistribute copyrighted game update files.
@@ -102,8 +108,8 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 
 ### Use the release package
 
-1. Install Microsoft .NET 8 Desktop Runtime for Windows x64.
-2. Download `RhoViewerPortable_v0.3.1_win-x64.zip` from the [v0.3.1 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.1) and extract it.
+1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
+2. Download `RhoViewerPortable_v0.3.2_win-x64.zip` from the [v0.3.2 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.2) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -144,13 +150,13 @@ RhoViewerPortable-Source/
 ### Running the release package
 
 - Windows x64.
-- Microsoft .NET 8 Desktop Runtime for Windows x64.
+- Microsoft .NET 10 Desktop Runtime 10.0.14 or later for Windows x64.
 - To play OGG or FLAC, a compatible player must already be installed or lawfully obtained and placed in the `Players` directory.
 
 ### Building the source package
 
 - A Windows x64 development environment.
-- .NET 8 SDK and Windows Desktop SDK.
+- .NET 10 SDK and Windows Desktop SDK.
 - The first build requires NuGet package restore. After restore is complete, offline Rho parsing self-tests do not require network access.
 
 ## Configuration and logs
@@ -203,7 +209,7 @@ dotnet publish RhoViewerPortable\\RhoViewerPortable.csproj `
 
 `--self-contained false` is intentional: the release package does not carry the .NET Runtime. `PublishSingleFile=false` keeps the application DLL, dependency files, and runtimeconfig visible for troubleshooting and for confirming a framework-dependent deployment.
 
-The GitHub Actions CI workflow builds the Windows x64 portable package, runs offline parser/updater self-tests, and attaches the publish directory to the workflow run as an artifact (retained for 14 days). Version tags publish the ZIP as a GitHub Release asset. Download and extract the complete ZIP; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 8 Desktop Runtime.
+The GitHub Actions CI workflow builds the Windows x64 portable package, runs offline parser/updater self-tests, and attaches the publish directory to the workflow run as an artifact (retained for 14 days). Version tags publish the ZIP as a GitHub Release asset. Download and extract the complete ZIP; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 10 Desktop Runtime.
 
 ## Offline self-tests
 
@@ -216,7 +222,7 @@ RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
 - `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, resource categories, and LPK selection/header rejection.
-- `--security-self-test`: checks discovery-origin confinement, NFO200 CSV/size/path validation, Windows path normalization, and backup rollback behavior without network access.
+- `--security-self-test`: checks that automatic HTTP decompression stays disabled, discovery-origin confinement, NFO200 CSV/size/path validation, Windows path normalization, and backup rollback behavior without network access.
 - `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
 - `--self-test`: reads specified `.rho`, `.rho5`, or `.lpk` inputs; for LPK it decodes every entry and checks the stored size and MD5.
 - `--smoke-load`: creates the WinForms main window, loads the specified archive, and closes automatically to detect startup or loading crashes.
