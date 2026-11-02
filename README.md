@@ -244,7 +244,7 @@ MainForm (WinForms UI)
 
 The RhoKey table is stored locally at `third_party/Kartrider-File-Reader/src/KartriderLibrary/Encrypt/RhoKey.cs`. The application does not read a GitHub raw URL at runtime and does not require a remote key service.
 
-The `.1s` analyzer reports candidate occurrences of public file/model/vertex markers and a declared module count where the file header permits it. Marker definitions are referenced from the MIT-licensed `VT-Tuzki/kartrider_model_1s_to_obj` project; no parser or exporter code is copied. It does not decode meshes, materials, animations, or reliably determine whether a model is a track, character, or kart. See `THIRD_PARTY_NOTICES.txt` and `third_party/Kartrider-File-Reader/UPSTREAM.md` for dependency provenance and license details.
+The `.1s` analyzer reports candidate occurrences of public file/model/vertex markers and a declared module count where the file header permits it. Marker definitions are referenced from the MIT-licensed `VT-Tuzki/kartrider_model_1s_to_obj` project; no parser or exporter code is copied. [`nixliuxin/KartRider-Tools`](https://github.com/nixliuxin/KartRider-Tools) is also acknowledged as a high-level reference for the broader `.1s` analysis and conversion scope, not as a code dependency. Rho Viewer does not copy its source, binaries, or implementation; it still does not decode meshes, materials, animations, or reliably determine whether a model is a track, character, or kart. See `THIRD_PARTY_NOTICES.txt` and `third_party/Kartrider-File-Reader/UPSTREAM.md` for dependency provenance and license details.
 
 ## Security and data boundaries
 
@@ -280,6 +280,7 @@ Acknowledgements:
 4. 百度韓服跑跑卡丁車貼吧 澜轶: for the Microsoft LpkToolkit v1.x adaptation framework supporting Nexon LPK v4.
 5. 不到壹个字 (budaoyigezi): for the LPK tool implementation reference.
 6. Royal: for the batch-tool adaptation reference.
+7. [`nixliuxin/KartRider-Tools`](https://github.com/nixliuxin/KartRider-Tools): as a high-level reference for `.1s` resource analysis and conversion scope. No code or binaries from this project are included or copied; Rho Viewer’s `.1s` support remains experimental marker fingerprinting only.
 
 The LPK attributions refer to user-provided reference materials. The reference utilities' source code, binaries, and game sample packages are not redistributed in this project.
 The original RhoDump executable, archive, and user-provided game samples are not redistributed in this package.

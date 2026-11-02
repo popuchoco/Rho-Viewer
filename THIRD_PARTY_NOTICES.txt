@@ -26,8 +26,8 @@ an external audio decoder.
 The full GPL-3.0 text is included in LICENSE. The source package also keeps
 the upstream LICENSE file beside the local KartLibrary source.
 
-2. KartRider .1s marker reference
----------------------------------
+2. KartRider .1s marker and feature-scope references
+----------------------------------------------------
 
 Source: https://github.com/VT-Tuzki/kartrider_model_1s_to_obj
 License: MIT
@@ -36,6 +36,15 @@ The read-only .1s analyzer references the public marker byte sequences
 documented by this project. No parser or exporter code is copied or bundled.
 The analyzer reports marker candidates only; it does not claim complete .1s
 format support.
+
+Additional high-level reference: https://github.com/nixliuxin/KartRider-Tools
+
+This project is acknowledged for its public description of broader KartRider
+.1s analysis and conversion capabilities, as a comparison/reference for
+feature scope only. Rho Viewer does not copy or redistribute its source code,
+implementation, assets, or release binaries. Its own .1s support remains
+experimental marker fingerprinting only; this acknowledgement does not grant
+a license to KartRider-Tools or its contents.
 
 3. kart-patcher reference
 -------------------------
