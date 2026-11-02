@@ -417,7 +417,10 @@ namespace KartLibrary.File
         {
             if (!_dataInfoMap.ContainsKey(dataIndex))
                 throw new Exception("index not exist.");
-            using FileStream clonedRhoStream = new FileStream(_rhoStream.SafeFileHandle, FileAccess.Read);
+            // This wrapper shares the archive's SafeFileHandle; disposing it here
+            // would close the parent archive stream. Keep the same lifetime behavior
+            // as the upstream reader while doing bounded exact reads below.
+            FileStream clonedRhoStream = new FileStream(_rhoStream.SafeFileHandle, FileAccess.Read);
             RhoDataInfo dataInfo = _dataInfoMap[dataIndex];
 
             const int maxResourceBytes = 256 * 1024 * 1024;

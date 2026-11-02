@@ -453,7 +453,10 @@ namespace KartLibrary.File
             FileStream rho5Stream = _rho5Streams[handler._dataPackID];
             if (rho5Stream is null || !rho5Stream.CanRead)
                 throw new Exception("");
-            using FileStream clonedStream = new FileStream(rho5Stream.SafeFileHandle, FileAccess.Read);
+            // This wrapper shares the archive's SafeFileHandle; disposing it here
+            // would close the parent archive stream. Keep the same lifetime behavior
+            // as the upstream reader while doing bounded exact reads below.
+            FileStream clonedStream = new FileStream(rho5Stream.SafeFileHandle, FileAccess.Read);
             Rho5DecryptStream decryptStream = new Rho5DecryptStream(clonedStream, handler._key);
             const int maxResourceBytes = 256 * 1024 * 1024;
             if (handler._compressedSize < 0 || handler._compressedSize > maxResourceBytes ||
