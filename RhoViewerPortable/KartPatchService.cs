@@ -100,6 +100,10 @@ internal sealed class KartPatchResult
 internal sealed class KartPatchService
 {
     private const string InternalDirectoryName = ".RhoViewerUpdate";
+    internal const int MaxManifestBytes = 16 * 1024 * 1024;
+    internal const int MaxManifestFiles = 100_000;
+    internal const long MaxPatchFileBytes = 16L * 1024 * 1024 * 1024;
+    internal const long MaxPatchPlanBytes = 128L * 1024 * 1024 * 1024;
     private static readonly HttpClient HttpClient = CreateHttpClient();
 
     public async Task<KartPatchPlan> BuildPlanAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken = default)
@@ -108,18 +112,22 @@ internal sealed class KartPatchService
         var connection = await KartPatchDiscovery.DiscoverAsync(gameDirectory, region, cancellationToken).ConfigureAwait(false);
         var patchBaseUrl = CombineUrl(connection.PatchBaseUrl, connection.ServerVersion.ToString());
         var manifestUrl = CombineUrl(patchBaseUrl, "files.nfo2");
-        using var response = await HttpClient.GetAsync(manifestUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        using var response = await SendTrustedGetAsync(manifestUrl, patchBaseUrl, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"更新清單讀取失敗：HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
 
-        var manifest = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var manifest = await ReadBoundedTextAsync(response.Content, MaxManifestBytes, cancellationToken).ConfigureAwait(false);
         var files = ParseManifest(manifest);
         var items = new List<KartPatchPlanItem>(files.Count);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        long planBytes = 0;
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var relativePath = NormalizeRelativePath(file.RelativePath);
+            planBytes = checked(planBytes + file.Size + file.SizeGzipped);
+            if (planBytes > MaxPatchPlanBytes)
+                throw new InvalidDataException("更新清單總暫存/下載量超過安全上限（128 GiB）。");
             if (!seen.Add(relativePath))
                 throw new InvalidDataException($"更新清單有重複路徑：{relativePath}");
             if (relativePath.StartsWith(InternalDirectoryName + "/", StringComparison.OrdinalIgnoreCase) ||
@@ -127,6 +135,7 @@ internal sealed class KartPatchService
                 throw new InvalidDataException($"更新清單不可寫入更新工作區：{relativePath}");
 
             var targetPath = GetSafeChildPath(gameDirectory, relativePath);
+            EnsureNoReparsePoints(gameDirectory, relativePath);
             var state = KartPatchFileState.Missing;
             var localSize = 0L;
             if (File.Exists(targetPath))
@@ -177,6 +186,7 @@ internal sealed class KartPatchService
         }
 
         var internalDirectory = GetSafeChildPath(plan.GameDirectory, InternalDirectoryName);
+        EnsureNoReparsePoints(plan.GameDirectory, InternalDirectoryName);
         var stagingDirectory = Path.Combine(internalDirectory, "staging", Guid.NewGuid().ToString("N"));
         var backupDirectory = Path.Combine(internalDirectory, "backups", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         var applied = new List<(string Target, string Backup, bool HadOriginal)>();
@@ -185,12 +195,15 @@ internal sealed class KartPatchService
 
         try
         {
+            EnsureNoReparsePoints(plan.GameDirectory, Path.GetRelativePath(plan.GameDirectory, stagingDirectory));
+            EnsureNoReparsePoints(plan.GameDirectory, Path.GetRelativePath(plan.GameDirectory, backupDirectory));
             Directory.CreateDirectory(stagingDirectory);
             Directory.CreateDirectory(backupDirectory);
             foreach (var item in plan.Changes)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var stagedPath = GetSafeChildPath(stagingDirectory, item.File.RelativePath);
+                EnsureNoReparsePoints(stagingDirectory, item.File.RelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
                 var partialPath = stagedPath + ".part";
                 progress?.Report(new KartPatchProgress
@@ -206,6 +219,7 @@ internal sealed class KartPatchService
                 var compressedUrl = CombineUrl(plan.PatchBaseUrl, item.File.RelativePath + ".gz");
                 await DownloadAndExtractVerifyAsync(
                     compressedUrl,
+                    plan.PatchBaseUrl,
                     partialPath,
                     item.File,
                     bytes =>
@@ -242,6 +256,9 @@ internal sealed class KartPatchService
                 cancellationToken.ThrowIfCancellationRequested();
                 var stagedPath = GetSafeChildPath(stagingDirectory, item.File.RelativePath);
                 var backupPath = GetSafeChildPath(backupDirectory, item.File.RelativePath);
+                EnsureNoReparsePoints(plan.GameDirectory, item.File.RelativePath);
+                EnsureNoReparsePoints(stagingDirectory, item.File.RelativePath);
+                EnsureNoReparsePoints(backupDirectory, item.File.RelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(item.TargetPath)!);
                 Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
 
@@ -303,6 +320,7 @@ internal sealed class KartPatchService
 
     private static async Task DownloadAndExtractVerifyAsync(
         string url,
+        string trustedBaseUrl,
         string outputPath,
         KartPatchFile file,
         Action<long> reportBytes,
@@ -311,9 +329,14 @@ internal sealed class KartPatchService
         var compressedPath = outputPath + ".gz";
         try
         {
-            using var response = await HttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (file.Size < 0 || file.Size > MaxPatchFileBytes || file.SizeGzipped < 0 || file.SizeGzipped > MaxPatchFileBytes)
+                throw new InvalidDataException($"更新檔大小超過安全上限：{file.RelativePath}");
+
+            using var response = await SendTrustedGetAsync(url, trustedBaseUrl, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"更新檔下載失敗：{file.RelativePath}；HTTP {(int)response.StatusCode}");
+            if (response.Content.Headers.ContentLength is long contentLength && contentLength > file.SizeGzipped)
+                throw new InvalidDataException($"更新檔壓縮大小超出清單宣告：{file.RelativePath}");
 
             await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
             await using (var compressed = new FileStream(compressedPath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
@@ -322,10 +345,14 @@ internal sealed class KartPatchService
                 int read;
                 while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
                 {
+                    if (read > file.SizeGzipped - compressed.Length)
+                        throw new InvalidDataException($"更新檔壓縮資料超出清單宣告：{file.RelativePath}");
                     await compressed.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                     reportBytes(read);
                 }
                 await compressed.FlushAsync(cancellationToken).ConfigureAwait(false);
+                if (compressed.Length != file.SizeGzipped)
+                    throw new InvalidDataException($"更新檔壓縮大小與清單不符：{file.RelativePath}");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
@@ -333,8 +360,19 @@ internal sealed class KartPatchService
             await using (var gzip = new GZipStream(compressed, CompressionMode.Decompress))
             await using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
             {
-                await gzip.CopyToAsync(output, 64 * 1024, cancellationToken).ConfigureAwait(false);
+                var buffer = new byte[64 * 1024];
+                long expanded = 0;
+                int read;
+                while ((read = await gzip.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                {
+                    if (read > file.Size - expanded)
+                        throw new InvalidDataException($"更新檔解壓後超出清單宣告大小：{file.RelativePath}");
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    expanded += read;
+                }
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                if (expanded != file.Size)
+                    throw new InvalidDataException($"更新檔大小與清單不符：{file.RelativePath}");
             }
 
             var length = new FileInfo(outputPath).Length;
@@ -358,24 +396,40 @@ internal sealed class KartPatchService
         }
     }
 
-    private static IReadOnlyList<KartPatchFile> ParseManifest(string text)
+    internal static IReadOnlyList<KartPatchFile> ParseManifest(string text)
     {
+        if (text.Length > MaxManifestBytes)
+            throw new InvalidDataException("NFO200 清單超過 16 MiB 安全上限。");
         if (!text.TrimStart().StartsWith("NFO200", StringComparison.Ordinal))
             throw new InvalidDataException("更新服務回傳的不是 KartRider NFO200 清單。");
 
         var result = new List<KartPatchFile>();
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries).Skip(1))
         {
+            if (line.Length > 16 * 1024)
+                throw new InvalidDataException("NFO200 清單單行超過 16 KiB 安全上限。");
             var fields = ParseCsvLine(line);
-            if (fields.Count < 12)
+            if (fields.Count < 12 || fields.Count > 64)
                 throw new InvalidDataException("NFO200 清單欄位數量不足。");
+
+            if (result.Count >= MaxManifestFiles)
+                throw new InvalidDataException("NFO200 清單項目超過 100,000 個安全上限。");
+
+            var size = ParseInt64(fields[3]);
+            var sizeGzipped = ParseInt64(fields[4]);
+            var relativePath = NormalizeRelativePath(fields[0]);
+            if (!seenPaths.Add(relativePath))
+                throw new InvalidDataException($"NFO200 清單有重複路徑：{relativePath}");
+            if (size > MaxPatchFileBytes || sizeGzipped > MaxPatchFileBytes)
+                throw new InvalidDataException("NFO200 清單檔案大小超過 16 GiB 安全上限。");
 
             result.Add(new KartPatchFile
             {
-                RelativePath = fields[0].Replace('\\', '/'),
+                RelativePath = relativePath,
                 Crc = ParseUInt32(fields[2]),
-                Size = ParseInt64(fields[3]),
-                SizeGzipped = ParseInt64(fields[4])
+                Size = size,
+                SizeGzipped = sizeGzipped
             });
         }
 
@@ -410,6 +464,8 @@ internal sealed class KartPatchService
             else
                 current.Append(ch);
         }
+        if (quoted)
+            throw new InvalidDataException("NFO200 清單含有未結束的引號欄位。");
         fields.Add(current.ToString());
         return fields;
     }
@@ -448,17 +504,33 @@ internal sealed class KartPatchService
         return NormalizeRoot(fullPath);
     }
 
-    private static string NormalizeRelativePath(string path)
+    internal static string NormalizeRelativePath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0)
+        if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > 2048)
             throw new InvalidDataException("更新清單含有空白或無效路徑。");
-        var normalized = path.Trim().Replace('\\', '/').TrimStart('/');
-        if (Path.IsPathRooted(path) || normalized.Length == 0 || normalized.Split('/').Any(part => part is "" or "." or ".."))
+        var normalized = path.Trim().Replace('\\', '/');
+        var segments = normalized.Split('/');
+        if (Path.IsPathRooted(path) || normalized.StartsWith('/') || normalized.Length == 0 ||
+            segments.Any(part => part is "" or "." or ".." || part.Contains(':') || part.EndsWith(' ') || part.EndsWith('.')) ||
+            segments.Any(part => part.Any(ch => Path.GetInvalidFileNameChars().Contains(ch))) ||
+            segments.Any(IsReservedDeviceName))
             throw new InvalidDataException($"更新路徑不可離開遊戲目錄：{path}");
         return normalized;
     }
 
-    private static string GetSafeChildPath(string root, string relativePath)
+    private static bool IsReservedDeviceName(string segment)
+    {
+        var baseName = segment.Split('.')[0];
+        return baseName.Equals("CON", StringComparison.OrdinalIgnoreCase) ||
+               baseName.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+               baseName.Equals("AUX", StringComparison.OrdinalIgnoreCase) ||
+               baseName.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
+               (baseName.Length == 4 &&
+                (baseName.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || baseName.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
+                baseName[3] is >= '1' and <= '9');
+    }
+
+    internal static string GetSafeChildPath(string root, string relativePath)
     {
         var normalizedRoot = NormalizeRoot(Path.GetFullPath(root));
         var fullPath = Path.GetFullPath(Path.Combine(normalizedRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
@@ -466,6 +538,32 @@ internal sealed class KartPatchService
         if (!fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"路徑超出選定遊戲目錄：{relativePath}");
         return fullPath;
+    }
+
+    internal static void EnsureNoReparsePoints(string root, string relativePath)
+    {
+        var normalizedRoot = Path.GetFullPath(root);
+        var current = normalizedRoot;
+        var segments = relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var segment in segments)
+        {
+            current = Path.Combine(current, segment);
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(current);
+            }
+            catch (FileNotFoundException)
+            {
+                break;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                break;
+            }
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"更新路徑包含符號連結或 reparse point，已拒絕：{current}");
+        }
     }
 
     private static string NormalizeRoot(string path)
@@ -478,13 +576,82 @@ internal sealed class KartPatchService
 
     private static string CombineUrl(string baseUrl, string relative)
     {
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) ||
-            (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
-            throw new InvalidDataException($"更新服務端點不是 HTTP/HTTPS：{baseUrl}");
-        return new Uri(new Uri(baseUri.ToString().TrimEnd('/') + "/"), relative.Replace('\\', '/')).AbsoluteUri;
+        var baseUri = ValidateDiscoveredPatchEndpoint(baseUrl);
+        var escapedRelative = string.Join("/", relative.Replace('\\', '/').Split('/').Select(Uri.EscapeDataString));
+        var combined = new Uri(new Uri(baseUri.ToString().TrimEnd('/') + "/"), escapedRelative).AbsoluteUri;
+        return ValidatePatchUri(combined, baseUrl).AbsoluteUri;
     }
 
-    private static void Rollback(IReadOnlyList<(string Target, string Backup, bool HadOriginal)> applied)
+    internal static Uri ValidatePatchUri(string value, string trustedEndpoint)
+    {
+        var uri = ValidateDiscoveredPatchEndpoint(value);
+        var trustedUri = ValidateDiscoveredPatchEndpoint(trustedEndpoint);
+        if (!SameOrigin(uri, trustedUri))
+            throw new InvalidDataException($"更新請求離開 discovery 回傳的 patch endpoint origin：{uri.GetLeftPart(UriPartial.Authority)}");
+        return uri;
+    }
+
+    private static Uri ValidateDiscoveredPatchEndpoint(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+            string.IsNullOrWhiteSpace(uri.Host) || !string.IsNullOrEmpty(uri.UserInfo))
+            throw new InvalidDataException($"KartRider.pin/patch socket 回傳的 endpoint 不是有效 HTTP/HTTPS URL：{value}");
+        return uri;
+    }
+
+    private static bool SameOrigin(Uri left, Uri right)
+        => string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(left.IdnHost, right.IdnHost, StringComparison.OrdinalIgnoreCase) &&
+           left.Port == right.Port;
+
+    private static async Task<HttpResponseMessage> SendTrustedGetAsync(string value, string trustedEndpoint, CancellationToken cancellationToken)
+    {
+        var current = ValidatePatchUri(value, trustedEndpoint);
+        for (var redirects = 0; ; redirects++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, current);
+            var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if ((int)response.StatusCode is < 300 or > 399)
+                return response;
+
+            var location = response.Headers.Location;
+            response.Dispose();
+            if (location is null || redirects >= 5)
+                throw new HttpRequestException("更新服務重新導向無效或超過 5 次。");
+            current = ValidatePatchUri(location.IsAbsoluteUri ? location.AbsoluteUri : new Uri(current, location).AbsoluteUri, trustedEndpoint);
+        }
+    }
+
+    private static async Task<string> ReadBoundedTextAsync(HttpContent content, int maxBytes, CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is long contentLength && contentLength > maxBytes)
+            throw new InvalidDataException($"更新清單超過 {maxBytes / (1024 * 1024)} MiB 安全上限。");
+
+        await using var input = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var output = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        int read;
+        while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            if (read > maxBytes - output.Length)
+                throw new InvalidDataException($"更新清單超過 {maxBytes / (1024 * 1024)} MiB 安全上限。");
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+
+        try
+        {
+            var bytes = output.ToArray();
+            var offset = bytes.AsSpan().StartsWith(Encoding.UTF8.Preamble) ? Encoding.UTF8.Preamble.Length : 0;
+            return new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset);
+        }
+        catch (DecoderFallbackException ex)
+        {
+            throw new InvalidDataException("更新清單不是有效的 UTF-8 文字。", ex);
+        }
+    }
+
+    internal static void Rollback(IReadOnlyList<(string Target, string Backup, bool HadOriginal)> applied)
     {
         foreach (var entry in applied.Reverse())
         {
@@ -517,8 +684,9 @@ internal sealed class KartPatchService
 
     private static HttpClient CreateHttpClient()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RhoViewerPortable", "0.2.0"));
+        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RhoViewerPortable", "0.3.1"));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain"));
         return client;
     }
@@ -535,6 +703,9 @@ internal sealed record KartPatchConnection(
 
 internal static class KartPatchDiscovery
 {
+    private const int MaxPinFileBytes = 1024 * 1024;
+    private const int MaxPinPayloadBytes = 16 * 1024 * 1024;
+
     public static async Task<KartPatchConnection> DiscoverAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken)
     {
         var pinPath = FindPinFile(gameDirectory);
@@ -570,6 +741,9 @@ internal static class KartPatchDiscovery
 
     private static async Task<PinInfo> ParsePinAsync(string path, CancellationToken cancellationToken)
     {
+        var fileInfo = new FileInfo(path);
+        if (fileInfo.Length > MaxPinFileBytes)
+            throw new InvalidDataException("KartRider.pin 超過 1 MiB 安全上限。");
         var file = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
         var cursor = new BinaryCursor(file);
         var dataLength = cursor.ReadUInt32LittleEndian();
@@ -589,12 +763,10 @@ internal static class KartPatchDiscovery
             payload = Decrypt(payload, key);
         if ((flags & 1) != 0)
         {
-            using var input = new MemoryStream(payload, writable: false);
-            using var inflater = new ZLibStream(input, CompressionMode.Decompress);
-            using var output = new MemoryStream();
-            inflater.CopyTo(output);
-            payload = output.ToArray();
+            payload = InflatePinPayload(payload);
         }
+        if (payload.Length > MaxPinPayloadBytes)
+            throw new InvalidDataException("KartRider.pin 解壓後超過 16 MiB 安全上限。");
 
         var reader = new BinaryCursor(payload);
         reader.Skip(9);
@@ -618,6 +790,22 @@ internal static class KartPatchDiscovery
         if (port == 0)
             throw new InvalidDataException("KartRider.pin 沒有有效的更新服務埠號。");
         return new PinInfo(clientVersion, officialPatchUrl, host, port);
+    }
+
+    private static byte[] InflatePinPayload(byte[] payload)
+    {
+        using var input = new MemoryStream(payload, writable: false);
+        using var inflater = new ZLibStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        int read;
+        while ((read = inflater.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            if (read > MaxPinPayloadBytes - output.Length)
+                throw new InvalidDataException("KartRider.pin 解壓後超過 16 MiB 安全上限。");
+            output.Write(buffer, 0, read);
+        }
+        return output.ToArray();
     }
 
     private static async Task<PatchSocketResponse> ConnectPatchSocketAsync(string host, int port, CancellationToken cancellationToken)

@@ -229,6 +229,7 @@ internal sealed class RhoArchiveContext : IDisposable
 
 internal sealed class RhoItem
 {
+    internal const int MaxMaterializedBytes = 256 * 1024 * 1024;
     private readonly Func<byte[]> _readBytes;
 
     internal RhoItem(RhoArchiveContext owner, string name, string relativePath, int size, string property, Func<byte[]> readBytes)
@@ -249,7 +250,18 @@ internal sealed class RhoItem
     public int Size { get; }
     public string Property { get; }
 
-    public byte[] ReadBytes() => _readBytes();
+    public byte[] ReadBytes()
+    {
+        if (Size < 0)
+            throw new InvalidDataException($"資源 {RelativePath} 宣告大小無效：{Size} bytes。");
+        if (Size > MaxMaterializedBytes)
+            throw new InvalidDataException($"資源 {RelativePath} 大小為 {Size:N0} bytes，超過單次載入上限 {MaxMaterializedBytes:N0} bytes。請使用專用串流工具處理此大型資源。");
+
+        var bytes = _readBytes();
+        if (bytes.Length > MaxMaterializedBytes)
+            throw new InvalidDataException($"資源 {RelativePath} 解碼後超過單次載入上限 {MaxMaterializedBytes:N0} bytes。");
+        return bytes;
+    }
 
 }
 

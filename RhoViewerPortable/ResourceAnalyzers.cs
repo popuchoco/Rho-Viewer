@@ -6,6 +6,12 @@ namespace RhoViewerPortable;
 
 internal static class ResourceAnalyzers
 {
+    internal const int MaxAnalysisBytes = 64 * 1024 * 1024;
+    private const int MaxOggHeaderPacketBytes = 2 * 1024 * 1024;
+    private const int MaxOggHeaderPackets = 4;
+    private const int MaxFlacMetadataBlocks = 4096;
+    private const int MaxCommentEntries = 10_000;
+
     public static string Analyze(RhoItem item, byte[] data)
     {
         return AnalyzeExtension(item.Extension, data);
@@ -13,7 +19,11 @@ internal static class ResourceAnalyzers
 
     internal static string AnalyzeExtension(string extension, byte[] data)
     {
-        return extension.ToLowerInvariant() switch
+        var normalizedExtension = extension.ToLowerInvariant();
+        if ((normalizedExtension is ".ksv" or ".ogg" or ".flac" or ".1s") && data.Length > MaxAnalysisBytes)
+            return $"資源過大，略過內容分析（上限 {MaxAnalysisBytes / (1024 * 1024)} MiB；目前 {data.Length / (1024 * 1024)} MiB）。可匯出原始資源後使用外部工具。";
+
+        return normalizedExtension switch
         {
             ".ksv" => AnalyzeKsv(data),
             ".ogg" => AnalyzeOgg(data),
@@ -62,46 +72,94 @@ internal static class ResourceAnalyzers
 
         var packets = new List<byte[]>();
         var packet = new List<byte>();
+        var packetTooLarge = false;
+        var anyPacketTooLarge = false;
+        var malformed = false;
         long lastGranule = -1;
         var pageCount = 0;
         var pos = 0;
-        while (pos + 27 <= data.Length && data.AsSpan(pos, 4).SequenceEqual("OggS"u8))
+        uint streamSerial = 0;
+        while (pos <= data.Length - 27)
         {
-            var segmentCount = data[pos + 26];
-            if (pos + 27 + segmentCount > data.Length)
+            if (!data.AsSpan(pos, 4).SequenceEqual("OggS"u8) || data[pos + 4] != 0)
+            {
+                malformed = true;
                 break;
+            }
+
+            var segmentCount = data[pos + 26];
+            var remainingAfterHeader = data.Length - pos - 27;
+            if (segmentCount > remainingAfterHeader)
+            {
+                malformed = true;
+                break;
+            }
+
             var granule = BinaryPrimitives.ReadInt64LittleEndian(data.AsSpan(pos + 6, 8));
             if (granule >= 0)
                 lastGranule = Math.Max(lastGranule, granule);
+            if (pageCount == 0)
+                streamSerial = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos + 14, 4));
+
             var segmentTable = data.AsSpan(pos + 27, segmentCount);
             var payloadStart = pos + 27 + segmentCount;
-            var payloadLength = segmentTable.ToArray().Sum(value => value);
-            if (payloadStart + payloadLength > data.Length)
+            var payloadLength = 0;
+            foreach (var segmentLength in segmentTable)
+            {
+                if (segmentLength > data.Length - payloadStart - payloadLength)
+                {
+                    malformed = true;
+                    break;
+                }
+                payloadLength += segmentLength;
+            }
+            if (malformed)
                 break;
 
             var payloadPos = payloadStart;
             foreach (var segmentLength in segmentTable)
             {
-                packet.AddRange(data.AsSpan(payloadPos, segmentLength).ToArray());
+                if (packets.Count < MaxOggHeaderPackets && !packetTooLarge)
+                {
+                    if (segmentLength > MaxOggHeaderPacketBytes - packet.Count)
+                    {
+                        packet.Clear();
+                        packetTooLarge = true;
+                        anyPacketTooLarge = true;
+                    }
+                    else
+                    {
+                        for (var i = 0; i < segmentLength; i++)
+                            packet.Add(data[payloadPos + i]);
+                    }
+                }
                 payloadPos += segmentLength;
                 if (segmentLength < 255)
                 {
-                    packets.Add(packet.ToArray());
+                    if (packets.Count < MaxOggHeaderPackets && !packetTooLarge)
+                        packets.Add(packet.ToArray());
                     packet.Clear();
+                    packetTooLarge = false;
                 }
             }
 
             pageCount++;
             pos = payloadStart + payloadLength;
         }
-        if (packet.Count > 0)
+        if (pageCount > 0 && pos != data.Length)
+            malformed = true;
+        if (packet.Count > 0 && packets.Count < MaxOggHeaderPackets && !packetTooLarge)
             packets.Add(packet.ToArray());
 
         var builder = new StringBuilder();
         builder.AppendLine("Ogg 容器分析");
-        builder.AppendLine($"串流序號：{(pageCount > 0 && data.Length >= 18 ? BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(14, 4)) : 0)}");
+        builder.AppendLine($"串流序號：{streamSerial}");
         builder.AppendLine($"頁數：{pageCount}");
         builder.AppendLine($"已組合封包：{packets.Count}");
+        if (malformed)
+            builder.AppendLine("警告：遇到截斷或無效的 Ogg 頁面；僅顯示已完整讀取的標頭資訊。");
+        if (anyPacketTooLarge)
+            builder.AppendLine("警告：有 Ogg 頁面封包超過標頭分析上限，已略過該封包。");
         if (packets.Count > 0 && packets[0].Length >= 30 && packets[0][0] == 1 && packets[0].AsSpan(1, 6).SequenceEqual("vorbis"u8))
         {
             var first = packets[0];
@@ -117,7 +175,7 @@ internal static class ResourceAnalyzers
             builder.AppendLine($"Block size：{1 << (first[28] & 0x0F)}–{1 << ((first[28] >> 4) & 0x0F)} samples");
             builder.AppendLine($"Framing flag：{(first[29] == 1 ? "有效" : "異常")}");
             if (lastGranule >= 0 && sampleRate > 0)
-                builder.AppendLine($"估算長度：{TimeSpan.FromSeconds(lastGranule / (double)sampleRate):hh\\:mm\\:ss\\.fff}");
+                builder.AppendLine($"估算長度：{FormatDuration(lastGranule / (double)sampleRate)}");
             AppendComments(builder, packets, 1, "Vorbis comments");
         }
         else if (packets.Count > 0 && packets[0].Length >= 19 && packets[0].AsSpan(0, 8).SequenceEqual("OpusHead"u8))
@@ -136,7 +194,7 @@ internal static class ResourceAnalyzers
             builder.AppendLine($"Output gain：{outputGain}（Q8 dB）");
             builder.AppendLine($"Channel mapping family：{mappingFamily}");
             if (lastGranule >= 0)
-                builder.AppendLine($"估算長度：{TimeSpan.FromSeconds(Math.Max(0, lastGranule - preSkip) / 48000d):hh\\:mm\\:ss\\.fff}");
+                builder.AppendLine($"估算長度：{FormatDuration(Math.Max(0, lastGranule - preSkip) / 48000d)}");
             AppendComments(builder, packets, 1, "Opus tags");
         }
         else
@@ -168,16 +226,33 @@ internal static class ResourceAnalyzers
                 continue;
             var count = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(offset, 4));
             offset += 4;
-            builder.AppendLine($"{title}：{count} 筆");
-            for (var i = 0; i < count && i < 12 && offset + 4 <= packet.Length; i++)
+            if (count > MaxCommentEntries || count > (uint)((packet.Length - offset) / 4))
             {
+                builder.AppendLine($"警告：{title} 數量或長度欄位無效。");
+                return;
+            }
+            builder.AppendLine($"{title}：{count} 筆");
+            var valid = true;
+            for (uint i = 0; i < count; i++)
+            {
+                if (offset + 4 > packet.Length)
+                {
+                    valid = false;
+                    break;
+                }
                 var length = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(offset, 4));
                 offset += 4;
                 if (length > packet.Length - offset)
+                {
+                    valid = false;
                     break;
-                builder.AppendLine($"  {Encoding.UTF8.GetString(packet, offset, (int)length)}");
+                }
+                if (i < 12)
+                    builder.AppendLine($"  {Encoding.UTF8.GetString(packet, offset, (int)length)}");
                 offset += (int)length;
             }
+            if (!valid)
+                builder.AppendLine($"警告：{title} 內容長度欄位無效。");
             return;
         }
     }
@@ -195,18 +270,28 @@ internal static class ResourceAnalyzers
         var seekTablePoints = 0;
         var pictureCount = 0;
         var paddingBytes = 0;
-        while (pos + 4 <= data.Length)
+        var malformed = false;
+        var metadataEnded = false;
+        while (pos <= data.Length - 4 && blockCount < MaxFlacMetadataBlocks)
         {
             var header = data[pos];
             var isLast = (header & 0x80) != 0;
             var type = header & 0x7F;
             var length = (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
             pos += 4;
-            if (pos + length > data.Length)
-                break;
-            blockCount++;
-            if (type == 0 && length >= 34)
+            if (length > data.Length - pos)
             {
+                malformed = true;
+                break;
+            }
+            blockCount++;
+            if (type == 0)
+            {
+                if (blockCount != 1 || length != 34)
+                {
+                    malformed = true;
+                    break;
+                }
                 var block = data.AsSpan(pos, length);
                 var minBlockSize = BinaryPrimitives.ReadUInt16BigEndian(block[..2]);
                 var maxBlockSize = BinaryPrimitives.ReadUInt16BigEndian(block.Slice(2, 2));
@@ -243,14 +328,30 @@ internal static class ResourceAnalyzers
             }
             else if (type == 4)
             {
-                commentCount += AppendFlacComments(builder, data.AsSpan(pos, length));
+                var parsedComments = AppendFlacComments(builder, data.AsSpan(pos, length));
+                if (parsedComments < 0)
+                    malformed = true;
+                else
+                    commentCount += parsedComments;
             }
             pos += length;
             if (isLast)
+            {
+                metadataEnded = true;
                 break;
+            }
+            if (blockCount == MaxFlacMetadataBlocks)
+            {
+                malformed = true;
+                break;
+            }
         }
+        if (!metadataEnded)
+            malformed = true;
         if (!streamInfoFound)
             builder.AppendLine("警告：找不到有效 STREAMINFO metadata。");
+        if (malformed)
+            builder.AppendLine("警告：FLAC metadata 區塊順序、長度或數量無效；已停止解析。");
         builder.AppendLine($"metadata blocks：{blockCount}");
         builder.AppendLine($"Seek points：{seekTablePoints:N0}");
         builder.AppendLine($"Picture blocks：{pictureCount:N0}");
@@ -265,31 +366,41 @@ internal static class ResourceAnalyzers
         return bitsPerSecond <= 0 ? "未設定" : $"{bitsPerSecond / 1000.0:N0} kbps";
     }
 
+    private static string FormatDuration(double seconds)
+    {
+        if (!double.IsFinite(seconds) || seconds < 0 || seconds > TimeSpan.MaxValue.TotalSeconds)
+            return "超出可表示範圍";
+        return TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss\.fff");
+    }
+
     private static int AppendFlacComments(StringBuilder builder, ReadOnlySpan<byte> block)
     {
         if (block.Length < 8)
-            return 0;
+            return -1;
         var pos = 0;
         var vendorLength = BinaryPrimitives.ReadUInt32LittleEndian(block[pos..]);
         pos += 4;
         if (vendorLength > block.Length - pos)
-            return 0;
+            return -1;
         pos += (int)vendorLength;
         if (pos + 4 > block.Length)
-            return 0;
+            return -1;
         var count = BinaryPrimitives.ReadUInt32LittleEndian(block[pos..]);
         pos += 4;
-        var appended = 0;
-        for (var i = 0; i < count && i < 12 && pos + 4 <= block.Length; i++)
+        if (count > MaxCommentEntries || count > (uint)((block.Length - pos) / 4))
+            return -1;
+        for (uint i = 0; i < count; i++)
         {
+            if (pos + 4 > block.Length)
+                return -1;
             var length = BinaryPrimitives.ReadUInt32LittleEndian(block[pos..]);
             pos += 4;
             if (length > block.Length - pos)
-                break;
-            builder.AppendLine($"  {Encoding.UTF8.GetString(block.Slice(pos, (int)length))}");
+                return -1;
+            if (i < 12)
+                builder.AppendLine($"  {Encoding.UTF8.GetString(block.Slice(pos, (int)length))}");
             pos += (int)length;
-            appended++;
         }
-        return appended;
+        return (int)Math.Min(count, 12);
     }
 }

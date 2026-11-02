@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.0` — framework-dependent `win-x64` portable release. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.1` — framework-dependent `win-x64` portable release. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 8 Desktop Runtime for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -43,6 +43,8 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Probe `.1s` files for public model-format marker candidates and a declared module count when the file header is present. This is a read-only format fingerprint, not a complete decoder or validity check.
 - Identify Ogg/Vorbis and Opus streams and report channels, sample rate, estimated duration, and tags.
 - Read FLAC STREAMINFO, channels, sample rate, bit depth, estimated duration, and Vorbis comments.
+- Apply a 64 MiB per-resource analysis ceiling; OGG and FLAC readers validate page/block lengths and bound packet/comment parsing before presenting metadata.
+- Bound single-resource materialization to 256 MiB to reduce memory-exhaustion risk. The current archive backends expose decoded resources as `byte[]`, so larger resources require a dedicated streaming tool rather than in-app preview/export.
 - Clearly distinguish a valid empty archive from a load or parsing failure.
 
 ### LPK v4 support and limits
@@ -80,6 +82,8 @@ Before replacing an existing file, the updater moves the original into this rela
 
 For example, a file originally located at `Data\\aaa.pk` is backed up under the timestamped backup directory as `Data\\aaa.pk`. The completed backup path is shown in the update status area. The updater attempts rollback if applying a batch fails, rejects absolute paths and parent traversal, and writes only below the selected game directory. It does not update the Rho Viewer executable, alter the registry, or execute a downloaded program.
 
+The updater follows the public `brownsugar/kart-patcher` discovery flow: it reads `KartRider.pin`, connects to the selected region's patch socket, then uses the socket-provided endpoint (falling back to the pin's `officialPatchUrl` only when the socket response is empty). HTTP requests and redirects are constrained to that discovered endpoint's exact origin; no generic Nexon domain suffixes are assumed. The known TW/KR/CN socket host/port mappings are based on the same project's region presets. NFO200 input is capped at 16 MiB/100,000 records; each compressed/uncompressed file is capped at 16 GiB and a plan at 128 GiB. Downloaded compressed size and bounded decompressed size must match the manifest before apply. Existing reparse points in updater destination paths are rejected. These checks reduce symlink/junction escape risks but do not make updates atomic against another process concurrently changing the selected game directory.
+
 The first implementation intentionally uses full-file updates only. It does not invoke `Patcher.exe` or apply delta patches. The patch service must still be available for the selected region; a historical or discontinued service may be unreachable and is not replaced by this application.
 
 The update workflow is informed by the public [`brownsugar/kart-patcher`](https://github.com/brownsugar/kart-patcher) project. That project provides client-side patcher research and implementation references; it does not redistribute copyrighted game update files.
@@ -99,7 +103,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft .NET 8 Desktop Runtime for Windows x64.
-2. Download `RhoViewerPortable_v0.3.0_win-x64.zip` from the [v0.3.0 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.0) and extract it.
+2. Download `RhoViewerPortable_v0.3.1_win-x64.zip` from the [v0.3.1 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.1) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -199,18 +203,20 @@ dotnet publish RhoViewerPortable\\RhoViewerPortable.csproj `
 
 `--self-contained false` is intentional: the release package does not carry the .NET Runtime. `PublishSingleFile=false` keeps the application DLL, dependency files, and runtimeconfig visible for troubleshooting and for confirming a framework-dependent deployment.
 
-The GitHub Actions CI workflow publishes the Windows x64 portable package as a ZIP asset on versioned GitHub Releases and also attaches the publish directory to the workflow run as an artifact (retained for 14 days). Download and extract the complete ZIP; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 8 Desktop Runtime.
+The GitHub Actions CI workflow builds the Windows x64 portable package, runs offline parser/updater self-tests, and attaches the publish directory to the workflow run as an artifact (retained for 14 days). Version tags publish the ZIP as a GitHub Release asset. Download and extract the complete ZIP; do not copy only `RhoViewerPortable.exe`, because it depends on the adjacent application files and the .NET 8 Desktop Runtime.
 
 ## Offline self-tests
 
 ```powershell
 RhoViewerPortable.exe --format-self-test
 RhoViewerPortable.exe --kart-crc-self-test
+RhoViewerPortable.exe --security-self-test
 RhoViewerPortable.exe --self-test stage_battleReady.rho character_tiera.rho DataPack1_00000.rho5
 RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 ```
 
 - `--format-self-test`: tests synthetic FLAC, invalid OGG handling, KSV fallback, `.1s` marker probing, resource categories, and LPK selection/header rejection.
+- `--security-self-test`: checks discovery-origin confinement, NFO200 CSV/size/path validation, Windows path normalization, and backup rollback behavior without network access.
 - `--kart-crc-self-test`: verifies the local Kart-specific CRC implementation against a deterministic test vector.
 - `--self-test`: reads specified `.rho`, `.rho5`, or `.lpk` inputs; for LPK it decodes every entry and checks the stored size and MD5.
 - `--smoke-load`: creates the WinForms main window, loads the specified archive, and closes automatically to detect startup or loading crashes.
@@ -263,6 +269,7 @@ The `.1s` analyzer reports candidate occurrences of public file/model/vertex mar
 - Rho archives are not modified or repacked.
 - LPK support is limited to the tested v4 table layout (flags 6/7, zero sections); LPK creation, repacking, and other variants are not supported.
 - KSV fields and text encoding may vary by game version and require more fixtures for cross-version validation.
+- The archive decoding backend currently materializes each resource as a byte array; resources over 256 MiB are rejected rather than streamed. Incremental archive streaming remains future work.
 - `.1s` support is limited to experimental marker fingerprinting; it does not export OBJ/USD or fully parse model geometry.
 - Game update availability depends on the region's patch service and the selected installation's `KartRider.pin`. The updater currently supports full-file NFO200 updates only; delta patching is intentionally not enabled.
 - Actual audio playback depends on the user's installed player and codecs.
@@ -281,6 +288,7 @@ Acknowledgements:
 5. 不到壹个字 (budaoyigezi): for the LPK tool implementation reference.
 6. Royal: for the batch-tool adaptation reference.
 7. [`nixliuxin/KartRider-Tools`](https://github.com/nixliuxin/KartRider-Tools): as a high-level reference for `.1s` resource analysis and conversion scope. No code or binaries from this project are included or copied; Rho Viewer’s `.1s` support remains experimental marker fingerprinting only.
+8. [`VT-Tuzki/kartrider_model_1s_to_obj`](https://github.com/VT-Tuzki/kartrider_model_1s_to_obj): for its MIT-licensed public `.1s` marker/format research, referenced for the read-only marker probe. No parser or OBJ exporter code is copied or bundled; the project’s MIT notice is recorded in `THIRD_PARTY_NOTICES.txt`.
 
 The LPK attributions refer to user-provided reference materials. The reference utilities' source code, binaries, and game sample packages are not redistributed in this project.
 The original RhoDump executable, archive, and user-provided game samples are not redistributed in this package.

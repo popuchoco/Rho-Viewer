@@ -31,6 +31,11 @@ internal static class Program
             return KartCrcSelfTest.Run();
         }
 
+        if (args.Length > 0 && string.Equals(args[0], "--security-self-test", StringComparison.OrdinalIgnoreCase))
+        {
+            return SecuritySelfTest.Run();
+        }
+
         if (args.Length > 0 && string.Equals(args[0], "--kart-crc-file-test", StringComparison.OrdinalIgnoreCase))
         {
             if (args.Length < 2)
@@ -280,9 +285,22 @@ internal static class FormatSelfTest
                 !flacSummary.Contains("MD5：", StringComparison.Ordinal))
                 throw new InvalidDataException("FLAC analyzer synthetic test failed.");
 
+            var malformedFlac = new byte[] { (byte)'f', (byte)'L', (byte)'a', (byte)'C', 0x80, 0, 0, 33 };
+            var malformedFlacSummary = ResourceAnalyzers.AnalyzeExtension(".flac", malformedFlac);
+            if (!malformedFlacSummary.Contains("順序、長度或數量無效", StringComparison.Ordinal))
+                throw new InvalidDataException("FLAC metadata bounds test failed.");
+
             var invalidOggSummary = ResourceAnalyzers.AnalyzeExtension(".ogg", "bad"u8.ToArray());
             if (!invalidOggSummary.Contains("不是標準 OggS", StringComparison.Ordinal))
                 throw new InvalidDataException("OGG invalid-header test failed.");
+
+            var truncatedOgg = new byte[28];
+            "OggS"u8.CopyTo(truncatedOgg);
+            truncatedOgg[26] = 1;
+            truncatedOgg[27] = 255;
+            var truncatedOggSummary = ResourceAnalyzers.AnalyzeExtension(".ogg", truncatedOgg);
+            if (!truncatedOggSummary.Contains("截斷或無效", StringComparison.Ordinal))
+                throw new InvalidDataException("OGG segment-table bounds test failed.");
 
             var ksvSummary = ResourceAnalyzers.AnalyzeExtension(".ksv", "not-a-ksv"u8.ToArray());
             if (!ksvSummary.Contains("KSV", StringComparison.Ordinal))
@@ -385,5 +403,114 @@ internal static class FormatSelfTest
         new byte[] { 0xAA, 0x47, 0x46, 0x04, 0x2A, 0x19 }.CopyTo(result, 22);
         new byte[] { 0xAA, 0x27 }.CopyTo(result, 32);
         return result;
+    }
+}
+
+internal static class SecuritySelfTest
+{
+    public static int Run()
+    {
+        try
+        {
+            TestPatchEndpointConfinement();
+            TestManifestValidation();
+            TestPatchPathValidation();
+            TestRollback();
+            Console.WriteLine("OK security checks: discovery-origin confinement, bounded NFO200 parsing, safe paths, rollback restoration");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL security self-tests: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static void TestPatchEndpointConfinement()
+    {
+        const string discoveredEndpoint = "https://patch-server.example.test/game/";
+        _ = KartPatchService.ValidatePatchUri("https://patch-server.example.test/game/files.nfo2", discoveredEndpoint);
+        _ = KartPatchService.ValidatePatchUri("https://patch-server.example.test:9443/game/files.nfo2", "https://patch-server.example.test:9443/game/");
+        ExpectInvalid(() => KartPatchService.ValidatePatchUri("https://another.example.test/game/files.nfo2", discoveredEndpoint), "cross-origin patch URL");
+        ExpectInvalid(() => KartPatchService.ValidatePatchUri("https://user:pass@patch-server.example.test/game/file", discoveredEndpoint), "URL credentials");
+        ExpectInvalid(() => KartPatchService.ValidatePatchUri("http://patch-server.example.test/game/file", discoveredEndpoint), "scheme-changing patch URL");
+    }
+
+    private static void TestManifestValidation()
+    {
+        const string header = "NFO200\r\n";
+        const string fields = ",unused,123,3,4,5,6,7,8,9,10,11";
+        var files = KartPatchService.ParseManifest(header + "\"Data,One.bin\"" + fields + "\r\n");
+        if (files.Count != 1 || files[0].RelativePath != "Data,One.bin" || files[0].Crc != 123 || files[0].Size != 3 || files[0].SizeGzipped != 4)
+            throw new InvalidDataException("NFO200 quoted CSV parsing test failed.");
+
+        ExpectInvalid(() => KartPatchService.ParseManifest(header + "\"unterminated" + fields + "\r\n"), "unclosed manifest quote");
+        ExpectInvalid(() => KartPatchService.ParseManifest(header + "Data.bin,unused,123,-1,4,5,6,7,8,9,10,11\r\n"), "negative manifest size");
+        ExpectInvalid(() => KartPatchService.ParseManifest(header + "Data.bin,unused,123,3,4,5,6,7,8,9,10,11\r\ndata.bin,unused,123,3,4,5,6,7,8,9,10,11\r\n"), "duplicate manifest paths");
+    }
+
+    private static void TestPatchPathValidation()
+    {
+        if (KartPatchService.NormalizeRelativePath("Data\\safe.bin") != "Data/safe.bin")
+            throw new InvalidDataException("Valid relative update path normalization failed.");
+        ExpectInvalid(() => KartPatchService.NormalizeRelativePath("../outside.bin"), "parent traversal");
+        ExpectInvalid(() => KartPatchService.NormalizeRelativePath("C:\\outside.bin"), "absolute drive path");
+        ExpectInvalid(() => KartPatchService.NormalizeRelativePath("/outside.bin"), "rooted path");
+        ExpectInvalid(() => KartPatchService.NormalizeRelativePath("Data/NUL.txt"), "reserved Windows device name");
+        ExpectInvalid(() => KartPatchService.NormalizeRelativePath("Data/file."), "trailing dot");
+
+        var root = Path.Combine(Path.GetTempPath(), "RhoViewerPortable", "PathSelfTest", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var safe = KartPatchService.GetSafeChildPath(root, "Data/safe.bin");
+            if (!safe.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Safe child path escaped its root.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void TestRollback()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RhoViewerPortable", "RollbackSelfTest", Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(root, "Data", "patched.bin");
+        var backup = Path.Combine(root, "backup", "Data", "patched.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
+        try
+        {
+            File.WriteAllText(target, "new");
+            File.WriteAllText(backup, "old");
+            KartPatchService.Rollback(new[] { (target, backup, true) });
+            if (!File.Exists(target) || File.ReadAllText(target) != "old" || File.Exists(backup))
+                throw new InvalidDataException("Update rollback did not restore the original file.");
+
+            var newFile = Path.Combine(root, "Data", "new-only.bin");
+            File.WriteAllText(newFile, "new");
+            KartPatchService.Rollback(new[] { (newFile, Path.Combine(root, "unused.bak"), false) });
+            if (File.Exists(newFile))
+                throw new InvalidDataException("Update rollback did not remove a newly created file.");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void ExpectInvalid(Action action, string label)
+    {
+        try
+        {
+            action();
+        }
+        catch (InvalidDataException)
+        {
+            return;
+        }
+        throw new InvalidDataException($"Expected rejection for {label}.");
     }
 }

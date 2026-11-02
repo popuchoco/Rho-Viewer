@@ -34,6 +34,9 @@ jobs:
       - name: Run Kart CRC self-test
         run: dotnet RhoViewerPortable/bin/Release/net8.0-windows/RhoViewerPortable.dll --kart-crc-self-test
 
+      - name: Run updater security self-tests
+        run: dotnet RhoViewerPortable/bin/Release/net8.0-windows/RhoViewerPortable.dll --security-self-test
+
       - name: Publish Windows x64 portable package
         run: >-
           dotnet publish RhoViewerPortable/RhoViewerPortable.csproj
@@ -57,12 +60,18 @@ jobs:
 
       - name: Pack versioned release ZIP
         shell: pwsh
-        env:
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.3.0' }}
         run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $releaseTag = $env:GITHUB_REF_NAME
+          }
+          else {
+            [xml]$project = Get-Content RhoViewerPortable/RhoViewerPortable.csproj
+            $projectVersion = $project.Project.PropertyGroup.Version | Select-Object -First 1
+            $releaseTag = "v$projectVersion"
+          }
           Compress-Archive `
             -Path RhoViewerPortable/publish/win-x64/* `
-            -DestinationPath "RhoViewerPortable/publish/RhoViewerPortable_${env:RELEASE_TAG}_win-x64.zip" `
+            -DestinationPath "RhoViewerPortable/publish/RhoViewerPortable_${releaseTag}_win-x64.zip" `
             -CompressionLevel Optimal `
             -Force
 
@@ -78,7 +87,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Rho-Viewer-Release-ZIP
-          path: RhoViewerPortable/publish/RhoViewerPortable_${{ github.ref_type == 'tag' && github.ref_name || 'v0.3.0' }}_win-x64.zip
+          path: RhoViewerPortable/publish/RhoViewerPortable_*_win-x64.zip
           if-no-files-found: error
           retention-days: 14
 
