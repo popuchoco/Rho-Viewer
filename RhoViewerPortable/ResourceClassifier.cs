@@ -30,12 +30,12 @@ internal static class ResourceClassifier
 
     public static string GetDisplayName(ResourceKind kind) => kind switch
     {
-        ResourceKind.Image => "圖片",
-        ResourceKind.Audio => "音訊",
-        ResourceKind.Model => "模型／場景",
-        ResourceKind.Recording => "KSV 記錄",
-        ResourceKind.StructuredData => "文字／結構資料",
-        _ => "其他"
+        ResourceKind.Image => LanguageManager.Translate("resource.kind.image", "圖片"),
+        ResourceKind.Audio => LanguageManager.Translate("resource.kind.audio", "音訊"),
+        ResourceKind.Model => LanguageManager.Translate("resource.kind.model", "模型／場景"),
+        ResourceKind.Recording => LanguageManager.Translate("resource.kind.recording", "KSV 記錄"),
+        ResourceKind.StructuredData => LanguageManager.Translate("resource.kind.structured", "文字／結構資料"),
+        _ => LanguageManager.Translate("resource.kind.other", "其他")
     };
 
     public static int GetSortOrder(ResourceKind kind) => kind switch

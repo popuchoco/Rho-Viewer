@@ -46,7 +46,8 @@ internal sealed class MainForm : Form
     private readonly UiMutationTracker _uiMutations = new();
     private bool _layoutInitialized;
     private AppSettings _settings = AppSettings.CreateDefault();
-    private static readonly ResourceKindFilterOption AllResourceKinds = new(null, "全部類別");
+    private ResourceKindFilterOption AllResourceKinds => new(null, LanguageManager.TranslateText("全部類別"));
+    private static string AllExtensionsLabel => LanguageManager.TranslateText("全部副檔名");
 
     public MainForm()
     {
@@ -59,12 +60,14 @@ internal sealed class MainForm : Form
         KeyPreview = true;
         AllowDrop = true;
         _settings = AppSettings.Load();
+        LanguageManager.Initialize(_settings.UiLanguage);
         AppLogger.Initialize(_settings.LogDirectory);
         AppLogger.Info("Startup", $"config={AppSettings.ConfigPath}; rhoDirectory={_settings.RhoDirectory}; logDirectory={AppLogger.LogDirectory}");
 
         BuildToolbar();
         BuildLayout();
         WireEvents();
+        LanguageManager.Apply(this);
         UpdateButtons();
     }
 
@@ -341,7 +344,7 @@ internal sealed class MainForm : Form
         _extensionFilter.Margin = new Padding(0, 5, 0, 5);
         _extensionFilter.AccessibleName = "副檔名篩選";
         _extensionFilter.AccessibleDescription = "依資源副檔名篩選";
-        _extensionFilter.Items.Add("全部副檔名");
+        _extensionFilter.Items.Add(AllExtensionsLabel);
         _extensionFilter.SelectedIndex = 0;
         filterPanel.Controls.Add(_extensionFilter, 5, 0);
 
@@ -709,6 +712,19 @@ internal sealed class MainForm : Form
         }
 
         var updated = dialog.GetSettings();
+        var languageChanged = !string.Equals(updated.UiLanguage, _settings.UiLanguage, StringComparison.OrdinalIgnoreCase);
+        var restartForLanguageChange = false;
+        if (languageChanged && MessageBox.Show(this,
+                LanguageManager.Translate("language.restart.message", "語言設定已變更。重新啟動程式以套用介面語言？"),
+                LanguageManager.Translate("language.restart.title", "介面語言"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            updated.UiLanguage = _settings.UiLanguage;
+        }
+        else if (languageChanged)
+        {
+            restartForLanguageChange = true;
+        }
         if (!updated.TrySave(out var error))
         {
             AppLogger.Error("SaveSettings", "failed", new IOException(error));
@@ -719,6 +735,12 @@ internal sealed class MainForm : Form
         _settings = updated;
         AppLogger.Initialize(_settings.LogDirectory);
         AppLogger.Info("SaveSettings", $"rhoDirectory={_settings.RhoDirectory}; logDirectory={AppLogger.LogDirectory}");
+        if (restartForLanguageChange)
+        {
+            Application.Restart();
+            Close();
+            return;
+        }
         _statusLabel.Text = $"設定已儲存；Log：{AppLogger.LogDirectory}";
         UpdateButtons();
     }
@@ -996,7 +1018,7 @@ internal sealed class MainForm : Form
             var filterArchive = selectedArchive ?? _treeContextFilter;
             var query = _searchBox.Text.Trim();
             var selectedKind = (_resourceKindFilter.SelectedItem as ResourceKindFilterOption)?.Kind;
-            var extension = _extensionFilter.SelectedItem as string ?? "全部副檔名";
+            var extension = _extensionFilter.SelectedItem as string ?? AllExtensionsLabel;
 
             var availableKinds = _allItems
                 .Where(item => filterArchive is null || ReferenceEquals(item.Owner, filterArchive))
@@ -1034,23 +1056,23 @@ internal sealed class MainForm : Form
             try
             {
                 _extensionFilter.Items.Clear();
-                _extensionFilter.Items.Add("全部副檔名");
+                _extensionFilter.Items.Add(AllExtensionsLabel);
                 foreach (var extensionName in extensions)
                     _extensionFilter.Items.Add(extensionName);
-                _extensionFilter.SelectedItem = _extensionFilter.Items.Contains(current) ? current : "全部副檔名";
+                _extensionFilter.SelectedItem = _extensionFilter.Items.Contains(current) ? current : AllExtensionsLabel;
             }
             finally
             {
                 _extensionFilter.EndUpdate();
             }
-            extension = _extensionFilter.SelectedItem as string ?? "全部副檔名";
+            extension = _extensionFilter.SelectedItem as string ?? AllExtensionsLabel;
 
             var filtered = _allItems.Where(item =>
                     (filterArchive is null || ReferenceEquals(item.Owner, filterArchive)) &&
                     (string.IsNullOrEmpty(_selectedFolderPath) || item.RelativePath.StartsWith(_selectedFolderPath + "/", StringComparison.OrdinalIgnoreCase)) &&
                     (string.IsNullOrEmpty(query) || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || item.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase) || item.Owner.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) || ResourceClassifier.GetDisplayName(item.Kind).Contains(query, StringComparison.OrdinalIgnoreCase)) &&
                     (selectedKind is null || item.Kind == selectedKind) &&
-                    (extension == "全部副檔名" || string.Equals(item.Extension, extension, StringComparison.OrdinalIgnoreCase)))
+                    (extension == AllExtensionsLabel || string.Equals(item.Extension, extension, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
 
             _fileGrid.Rows.Clear();
@@ -1062,7 +1084,7 @@ internal sealed class MainForm : Form
 
             _summaryLabel.Text = $"顯示 {filtered.Count:N0} / {_allItems.Count:N0} 個資源";
             _statusLabel.Text = _contexts.Count == 0 ? "請選擇資料夾或 Rho 檔案開始。" : $"已載入 {_contexts.Count} 個封包、{_allItems.Count:N0} 個資源；目前顯示 {filtered.Count:N0} 個";
-            if (!string.IsNullOrWhiteSpace(query) || selectedKind is not null || extension != "全部副檔名" || !string.IsNullOrEmpty(_selectedFolderPath))
+            if (!string.IsNullOrWhiteSpace(query) || selectedKind is not null || extension != AllExtensionsLabel || !string.IsNullOrEmpty(_selectedFolderPath))
                 AppLogger.Info("Filter", $"query={query}; kind={selectedKind}; extension={extension}; folder={_selectedFolderPath}; shown={filtered.Count}");
             UpdateButtons();
         }
@@ -1617,7 +1639,7 @@ internal sealed class MainForm : Form
         _resourceKindFilter.Items.Add(AllResourceKinds);
         _resourceKindFilter.SelectedIndex = 0;
         _extensionFilter.Items.Clear();
-        _extensionFilter.Items.Add("全部副檔名");
+        _extensionFilter.Items.Add(AllExtensionsLabel);
         _extensionFilter.SelectedIndex = 0;
         DisposePreviewBitmap();
         _previewImage.Visible = false;
@@ -1694,13 +1716,8 @@ internal sealed class MainForm : Form
     {
         var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "未知";
         MessageBox.Show(this,
-            $"Rho Viewer Portable {version}\n\n" +
-            "用於讀取、預覽與匯出 KartRider .rho、.rho5 與 .lpk 封包。\n" +
-            "支援資源瀏覽、分析、預覽、匯出，以及遊戲檔案更新。\n\n" +
-            "音效會先解出暫存檔，再交給 portable\\Players 或 Windows 預設播放器。\n" +
-            "格式解碼參考 xpoi5010/Kartrider-File-Reader。\n" +
-            "第三方來源與 GPL-3.0 授權見 THIRD_PARTY_NOTICES.txt。",
-            "關於 Rho Viewer Portable", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            LanguageManager.Format("about.body", "Rho Viewer Portable {0}\n\n用於讀取、預覽與匯出 KartRider .rho、.rho5 與 .lpk 封包。\n支援資源瀏覽、分析、預覽、匯出，以及遊戲檔案更新。\n\n音效會先解出暫存檔，再交給 portable\\Players 或 Windows 預設播放器。\n格式解碼參考 xpoi5010/Kartrider-File-Reader。\n第三方來源與 GPL-3.0 授權見 THIRD_PARTY_NOTICES.txt。", version),
+            LanguageManager.Translate("about.title", "關於 Rho Viewer Portable"), MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private static string FormatSize(long value)

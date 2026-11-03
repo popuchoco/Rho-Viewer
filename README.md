@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.4` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.5` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -105,6 +105,8 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 - Resize the left and right layout with the window while preserving the splitter ratio and usable minimum widths.
 - Save the normal window size and splitter ratio when the application closes normally.
 - Use Settings to specify the default Rho directory and Log directory.
+- Select the interface language (`HanS`, `HanT`, `KR`, or `EN`) in Settings. The choice is saved in the existing configuration file and applied after restarting the app.
+- Maintain each language as a separate XML package under `languages/`; the Settings window can open that folder. Keep the string `key` attributes unchanged when editing translations. Invalid or missing entries fall back to Traditional Chinese/default text.
 - The game update screen remembers the last selected game directory in the local configuration file.
 
 ## Quick start
@@ -112,7 +114,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
-2. Download `RhoViewerPortable_v0.3.4_win-x64.zip` from the [v0.3.4 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.4) and extract it.
+2. Download `RhoViewerPortable_v0.3.5_win-x64.zip` from the [v0.3.5 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.5) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -131,6 +133,12 @@ RhoViewerPortable-Source/
 ├── rho_probe.py
 ├── RhoViewerPortable/
 │   ├── RhoViewerPortable.csproj
+│   ├── LanguageManager.cs
+│   ├── languages/
+│   │   ├── zh-Hans.xml
+│   │   ├── zh-Hant.xml
+│   │   ├── ko-KR.xml
+│   │   └── en-US.xml
 │   ├── MainForm.cs
 │   ├── GameUpdateForm.cs
 │   ├── KartPatchService.cs
@@ -196,6 +204,7 @@ Main fields are:
   "rhoDirectory": "D:\\Game\\Rho",
   "gameDirectory": "D:\\Game\\KartRider",
   "gameRegion": "auto",
+  "uiLanguage": "zh-Hant.xml",
   "logDirectory": "D:\\RhoViewerLogs",
   "windowWidth": 1120,
   "windowHeight": 720,
@@ -206,6 +215,7 @@ Main fields are:
 - `rhoDirectory`: the default starting directory for Rho browsing and Import Settings Directory.
 - `gameDirectory`: the last directory selected by the game update screen. It is only a convenience default; the user must still review the path before checking or applying an update.
 - `gameRegion`: `auto`, `tw`, `kr`, or `cn`. `auto` uses the host and port stored in `KartRider.pin`; a selected region uses the corresponding public mapping.
+- `uiLanguage`: the selected language package filename (`zh-Hans.xml`, `zh-Hant.xml`, `ko-KR.xml`, or `en-US.xml`). It is persisted with the other settings, so saving folders, updater preferences, or window layout does not reset the language.
 - `logDirectory`: the directory for daily logs.
 - `windowWidth` and `windowHeight`: the normal window size used at the next launch.
 - `splitterRatio`: the width ratio of the left archive/folder area relative to the main content area.

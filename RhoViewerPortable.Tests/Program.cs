@@ -23,6 +23,7 @@ internal static class Program
         failures += RunSuite("resource parser malformed-input tests", ParserInputTests.Run);
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
+        failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
         Console.WriteLine(failures == 0 ? "ALL TEST SUITES PASSED" : $"TEST FAILURES: {failures}");
         return failures == 0 ? 0 : 1;
     }
@@ -40,6 +41,68 @@ internal static class Program
             Console.Error.WriteLine($"FAIL {name}: {ex}");
             return 1;
         }
+    }
+}
+
+internal static class LanguagePersistenceTests
+{
+    public static void Run()
+    {
+        TestLanguagePackageSelection();
+        TestSelectedLanguageSurvivesConfigRoundTrip();
+    }
+
+    private static void TestLanguagePackageSelection()
+    {
+        var packages = LanguageManager.GetPackages();
+        Assert(packages.Count == 4, $"expected four language packages, found {packages.Count}");
+
+        LanguageManager.Initialize("en-US.xml");
+        Assert(LanguageManager.CurrentFileName == "en-US.xml", "English selection was not loaded");
+        Assert(LanguageManager.Translate("about.title", "fallback") == "About Rho Viewer Portable", "English package translation was not applied");
+
+        LanguageManager.Initialize("../../unexpected.xml");
+        Assert(LanguageManager.CurrentFileName == "zh-Hant.xml", "unsupported package names must fall back to the default language");
+    }
+
+    private static void TestSelectedLanguageSurvivesConfigRoundTrip()
+    {
+        var path = AppSettings.ConfigPath;
+        var directory = Path.GetDirectoryName(path)!;
+        var directoryExisted = Directory.Exists(directory);
+        var fileExisted = File.Exists(path);
+        var original = fileExisted ? File.ReadAllBytes(path) : null;
+        try
+        {
+            var settings = AppSettings.CreateDefault();
+            settings.UiLanguage = "ko-KR.xml";
+            settings.GameRegion = "cn";
+            Assert(settings.TrySave(out var error), $"could not save settings: {error}");
+
+            var loaded = AppSettings.Load();
+            Assert(loaded.UiLanguage == "ko-KR.xml", "selected UI language was not persisted in config");
+            Assert(loaded.GameRegion == "cn", "saving another setting unexpectedly reset unrelated config data");
+
+            loaded.UiLanguage = "../../outside.xml";
+            loaded.Normalize();
+            Assert(loaded.UiLanguage == "zh-Hant.xml", "invalid language package name was not normalized safely");
+        }
+        finally
+        {
+            if (fileExisted && original is not null)
+                File.WriteAllBytes(path, original);
+            else if (File.Exists(path))
+                File.Delete(path);
+
+            if (!directoryExisted && Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+                Directory.Delete(directory);
+        }
+    }
+
+    private static void Assert(bool condition, string message)
+    {
+        if (!condition)
+            throw new InvalidOperationException(message);
     }
 }
 

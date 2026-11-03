@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace RhoViewerPortable;
 
 internal sealed class SettingsForm : Form
@@ -5,6 +7,7 @@ internal sealed class SettingsForm : Form
     private readonly AppSettings _current;
     private readonly TextBox _rhoDirectory = new();
     private readonly TextBox _logDirectory = new();
+    private readonly ComboBox _language = new();
 
     public SettingsForm(AppSettings current)
     {
@@ -15,7 +18,7 @@ internal sealed class SettingsForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(680, 240);
+        ClientSize = new Size(680, 326);
         Font = new Font("Microsoft JhengHei UI", 9F);
         BackColor = Color.FromArgb(245, 247, 250);
 
@@ -23,13 +26,15 @@ internal sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 6,
             Padding = new Padding(18),
             BackColor = BackColor
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
@@ -44,6 +49,14 @@ internal sealed class SettingsForm : Form
         root.Controls.Add(title, 0, 0);
         root.Controls.Add(BuildDirectoryRow("預設 Rho 目錄", _rhoDirectory, current.RhoDirectory, "選擇 Rho 目錄"), 0, 1);
         root.Controls.Add(BuildDirectoryRow("Log 目錄", _logDirectory, current.LogDirectory, "選擇 Log 目錄"), 0, 2);
+        root.Controls.Add(BuildLanguageRow(current.UiLanguage), 0, 3);
+        root.Controls.Add(new Label
+        {
+            Text = "語言包是 languages 資料夾中的獨立 XML 檔；可用文字編輯器維護，變更後重新啟動程式載入。",
+            Dock = DockStyle.Fill,
+            ForeColor = Color.FromArgb(100, 110, 124),
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 4);
 
         var buttons = new FlowLayoutPanel
         {
@@ -71,10 +84,11 @@ internal sealed class SettingsForm : Form
         };
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(save);
-        root.Controls.Add(buttons, 0, 3);
+        root.Controls.Add(buttons, 0, 5);
 
         AcceptButton = save;
         CancelButton = cancel;
+        LanguageManager.Apply(this);
     }
 
     public AppSettings GetSettings()
@@ -84,6 +98,7 @@ internal sealed class SettingsForm : Form
             RhoDirectory = _rhoDirectory.Text.Trim(),
             GameDirectory = _current.GameDirectory,
             GameRegion = _current.GameRegion,
+            UiLanguage = (_language.SelectedItem as LanguagePackageInfo)?.FileName ?? _current.UiLanguage,
             LogDirectory = _logDirectory.Text.Trim(),
             WindowWidth = _current.WindowWidth,
             WindowHeight = _current.WindowHeight,
@@ -91,6 +106,57 @@ internal sealed class SettingsForm : Form
         };
         settings.Normalize();
         return settings;
+    }
+
+    private Control BuildLanguageRow(string selectedFileName)
+    {
+        var row = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
+        row.Controls.Add(new Label
+        {
+            Text = "介面語言",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.FromArgb(55, 65, 81)
+        }, 0, 0);
+
+        _language.DropDownStyle = ComboBoxStyle.DropDownList;
+        _language.Dock = DockStyle.Fill;
+        _language.Margin = new Padding(0, 7, 10, 7);
+        foreach (var package in LanguageManager.GetPackages())
+            _language.Items.Add(package);
+        for (var index = 0; index < _language.Items.Count; index++)
+        {
+            if (_language.Items[index] is LanguagePackageInfo package &&
+                string.Equals(package.FileName, selectedFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                _language.SelectedIndex = index;
+                break;
+            }
+        }
+        if (_language.SelectedIndex < 0 && _language.Items.Count > 0)
+            _language.SelectedIndex = 0;
+        row.Controls.Add(_language, 1, 0);
+
+        var openLanguageFolder = new Button
+        {
+            Text = "開啟語言包資料夾",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 7, 0, 7),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(235, 240, 246),
+            ForeColor = Color.FromArgb(45, 55, 72)
+        };
+        openLanguageFolder.FlatAppearance.BorderColor = Color.FromArgb(205, 214, 226);
+        openLanguageFolder.Click += (_, _) =>
+        {
+            Directory.CreateDirectory(LanguageManager.LanguageDirectory);
+            Process.Start(new ProcessStartInfo { FileName = LanguageManager.LanguageDirectory, UseShellExecute = true });
+        };
+        row.Controls.Add(openLanguageFolder, 2, 0);
+        return row;
     }
 
     private Control BuildDirectoryRow(string labelText, TextBox textBox, string value, string description)

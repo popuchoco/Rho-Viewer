@@ -31,6 +31,7 @@ internal sealed class GameUpdateForm : Form
         BackColor = Color.FromArgb(242, 245, 249);
 
         BuildLayout();
+        LanguageManager.Apply(this);
         UpdateControls();
     }
 
@@ -40,6 +41,7 @@ internal sealed class GameUpdateForm : Form
         {
             RhoDirectory = _currentSettings.RhoDirectory,
             LogDirectory = _currentSettings.LogDirectory,
+            UiLanguage = _currentSettings.UiLanguage,
             GameDirectory = _gameDirectory.Text.Trim(),
             GameRegion = (_regionCombo.SelectedItem as KartRegionProfile)?.Code ?? _currentSettings.GameRegion,
             WindowWidth = _currentSettings.WindowWidth,
