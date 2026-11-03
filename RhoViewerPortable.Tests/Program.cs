@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Drawing;
 using System.Security.Cryptography;
 using System.Text;
 using RhoViewerPortable;
@@ -24,6 +25,7 @@ internal static class Program
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
         failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
+        failures += RunSuite("DDS decoding and malformed-input tests", DdsDecoderTests.Run);
         Console.WriteLine(failures == 0 ? "ALL TEST SUITES PASSED" : $"TEST FAILURES: {failures}");
         return failures == 0 ? 0 : 1;
     }
@@ -41,6 +43,230 @@ internal static class Program
             Console.Error.WriteLine($"FAIL {name}: {ex}");
             return 1;
         }
+    }
+}
+
+internal static class DdsDecoderTests
+{
+    public static void Run()
+    {
+        TestBc1AndTransparency();
+        TestBc2AndBc3();
+        TestBc4AndBc5();
+        TestDx10RgbaAndLegacyPitch();
+        TestInvalidAndUnsupportedInputs();
+        TestUnsupportedTextureLayouts();
+    }
+
+    private static void TestBc1AndTransparency()
+    {
+        var solidRed = new byte[8];
+        WriteUInt16(solidRed, 0, 0xf800);
+        WriteUInt16(solidRed, 2, 0x0000);
+        using (var decoded = DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "DXT1", solidRed)))
+        {
+            AssertColor(decoded.Bitmap.GetPixel(0, 0), Color.FromArgb(255, 255, 0, 0), "BC1/DXT1 red endpoint");
+            Assert(decoded.Bitmap.Width == 4 && decoded.Bitmap.Height == 4, "BC1 dimensions were not preserved");
+            Assert(decoded.Format.Contains("BC1", StringComparison.Ordinal), "BC1 format label was not returned");
+        }
+
+        WriteUInt16(solidRed, 2, 0xf800);
+        BinaryPrimitives.WriteUInt32LittleEndian(solidRed.AsSpan(4), uint.MaxValue);
+        using var transparent = DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "DXT1", solidRed));
+        Assert(transparent.Bitmap.GetPixel(0, 0).A == 0, "BC1 three-color mode did not preserve transparent index 3");
+    }
+
+    private static void TestBc2AndBc3()
+    {
+        var bc2 = new byte[16];
+        Array.Fill(bc2, (byte)0xff, 0, 8);
+        WriteUInt16(bc2, 8, 0xf800);
+        WriteUInt16(bc2, 10, 0x0000);
+        using (var decoded = DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "DXT3", bc2)))
+            AssertColor(decoded.Bitmap.GetPixel(0, 0), Color.FromArgb(255, 255, 0, 0), "BC2/DXT3 explicit alpha");
+
+        var bc3 = new byte[16];
+        bc3[0] = 255;
+        bc3[1] = 0;
+        WriteUInt16(bc3, 8, 0xf800);
+        WriteUInt16(bc3, 10, 0x0000);
+        using var bc3Decoded = DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "DXT5", bc3));
+        AssertColor(bc3Decoded.Bitmap.GetPixel(0, 0), Color.FromArgb(255, 255, 0, 0), "BC3/DXT5 interpolated alpha");
+    }
+
+    private static void TestBc4AndBc5()
+    {
+        var bc4 = new byte[8];
+        bc4[0] = bc4[1] = 64;
+        using (var decoded = DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "ATI1", bc4)))
+            AssertColor(decoded.Bitmap.GetPixel(0, 0), Color.FromArgb(255, 64, 64, 64), "BC4 grayscale channel");
+
+        var bc5 = new byte[16];
+        bc5[0] = bc5[1] = 255;
+        bc5[8] = bc5[9] = 128;
+        using var bc5Decoded = DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "ATI2", bc5));
+        AssertColor(bc5Decoded.Bitmap.GetPixel(0, 0), Color.FromArgb(255, 255, 128, 0), "BC5 two-channel preview");
+    }
+
+    private static void TestDx10RgbaAndLegacyPitch()
+    {
+        var rgba = new byte[] { 12, 34, 56, 78, 90, 123, 200, 255 };
+        using (var decoded = DdsImageDecoder.Decode(BuildDx10Dds(2, 1, 28, rgba)))
+        {
+            AssertColor(decoded.Bitmap.GetPixel(0, 0), Color.FromArgb(78, 12, 34, 56), "DX10 RGBA channel order");
+            AssertColor(decoded.Bitmap.GetPixel(1, 0), Color.FromArgb(255, 90, 123, 200), "DX10 RGBA second pixel");
+        }
+
+        var pixelFormat = new byte[32];
+        WriteUInt32(pixelFormat, 0, 32);
+        WriteUInt32(pixelFormat, 4, 0x40);
+        WriteUInt32(pixelFormat, 12, 24);
+        WriteUInt32(pixelFormat, 16, 0x00ff0000);
+        WriteUInt32(pixelFormat, 20, 0x0000ff00);
+        WriteUInt32(pixelFormat, 24, 0x000000ff);
+        var pitched = BuildMaskedDds(1, 1, pixelFormat, 4, new byte[] { 255, 0, 0, 0 });
+        using var legacy = DdsImageDecoder.Decode(pitched);
+        AssertColor(legacy.Bitmap.GetPixel(0, 0), Color.FromArgb(255, 0, 0, 255), "24-bit RGB masks with padded row pitch");
+    }
+
+    private static void TestInvalidAndUnsupportedInputs()
+    {
+        ExpectInvalid(() => DdsImageDecoder.Decode(new byte[127]), "truncated DDS header");
+        ExpectInvalid(() => DdsImageDecoder.Decode(BuildFourCcDds(4, 4, "DXT1", new byte[7])), "truncated BC1 block");
+
+        var missingHeaderFlags = BuildFourCcDds(4, 4, "DXT1", new byte[8]);
+        WriteUInt32(missingHeaderFlags, 8, 0);
+        ExpectInvalid(() => DdsImageDecoder.Decode(missingHeaderFlags), "missing required DDS header flags");
+
+        var missingTextureCaps = BuildFourCcDds(4, 4, "DXT1", new byte[8]);
+        WriteUInt32(missingTextureCaps, 108, 0);
+        ExpectInvalid(() => DdsImageDecoder.Decode(missingTextureCaps), "missing DDS texture caps");
+
+        var huge = BuildFourCcDds(4, 4, "DXT1", new byte[8]);
+        WriteUInt32(huge, 12, uint.MaxValue);
+        ExpectInvalid(() => DdsImageDecoder.Decode(huge), "oversized dimensions");
+
+        var unsupported = BuildFourCcDds(4, 4, "DXT9", new byte[16]);
+        try
+        {
+            using var _ = DdsImageDecoder.Decode(unsupported);
+        }
+        catch (NotSupportedException)
+        {
+            return;
+        }
+        throw new InvalidDataException("Unsupported DDS FourCC was not rejected.");
+    }
+
+    private static void TestUnsupportedTextureLayouts()
+    {
+        var legacyCubeFace = BuildFourCcDds(4, 4, "DXT1", new byte[8]);
+        WriteUInt32(legacyCubeFace, 112, 0x400); // A cube face flag without the main cube-map flag is malformed too.
+        ExpectUnsupported(() => DdsImageDecoder.Decode(legacyCubeFace), "legacy cube-map face");
+
+        var dx10Array = BuildDx10Dds(1, 1, 28, new byte[4]);
+        WriteUInt32(dx10Array, 140, 2);
+        ExpectUnsupported(() => DdsImageDecoder.Decode(dx10Array), "DX10 texture array");
+
+        var dx10Cube = BuildDx10Dds(1, 1, 28, new byte[4]);
+        WriteUInt32(dx10Cube, 136, 0x4);
+        ExpectUnsupported(() => DdsImageDecoder.Decode(dx10Cube), "DX10 cube map");
+    }
+
+    private static byte[] BuildFourCcDds(int width, int height, string fourCc, byte[] payload)
+    {
+        var result = CreateBaseHeader(width, height, 0x4, 0, 0, 0, 0, 0, 0, payload.Length);
+        WriteUInt32(result, 84, FourCc(fourCc));
+        payload.CopyTo(result, 128);
+        return result;
+    }
+
+    private static byte[] BuildDx10Dds(int width, int height, uint dxgiFormat, byte[] payload)
+    {
+        var rowPitch = dxgiFormat is 28 or 29 or 87 or 91 or 88 or 93 ? (uint)(width * 4) : 0;
+        var result = CreateBaseHeader(width, height, 0x4, 0, 0, 0, 0, 0, rowPitch, payload.Length + 20);
+        WriteUInt32(result, 84, FourCc("DX10"));
+        Array.Resize(ref result, 148 + payload.Length);
+        WriteUInt32(result, 128, dxgiFormat);
+        WriteUInt32(result, 132, 3); // D3D10_RESOURCE_DIMENSION_TEXTURE2D
+        WriteUInt32(result, 140, 1); // array size
+        payload.CopyTo(result, 148);
+        return result;
+    }
+
+    private static byte[] BuildMaskedDds(int width, int height, byte[] pixelFormat, int rowPitch, byte[] payload)
+    {
+        var result = CreateBaseHeader(width, height, 0x40, 0, 0, 0, 0, 0, (uint)rowPitch, payload.Length);
+        pixelFormat.CopyTo(result, 76);
+        payload.CopyTo(result, 128);
+        return result;
+    }
+
+    private static byte[] CreateBaseHeader(int width, int height, uint pixelFlags, uint fourCc, uint bits, uint red, uint green, uint blue, uint rowPitch, int payloadBytes)
+    {
+        var result = new byte[128 + payloadBytes];
+        "DDS "u8.CopyTo(result);
+        WriteUInt32(result, 4, 124);
+        WriteUInt32(result, 8, 0x1007 | (rowPitch > 0 ? 0x8u : 0)); // CAPS, HEIGHT, WIDTH, optional PITCH, PIXELFORMAT
+        WriteUInt32(result, 12, (uint)height);
+        WriteUInt32(result, 16, (uint)width);
+        WriteUInt32(result, 20, rowPitch);
+        WriteUInt32(result, 76, 32);
+        WriteUInt32(result, 80, pixelFlags);
+        WriteUInt32(result, 84, fourCc);
+        WriteUInt32(result, 88, bits);
+        WriteUInt32(result, 92, red);
+        WriteUInt32(result, 96, green);
+        WriteUInt32(result, 100, blue);
+        WriteUInt32(result, 108, 0x1000); // DDSCAPS_TEXTURE
+        return result;
+    }
+
+    private static uint FourCc(string value) =>
+        (uint)value[0] | (uint)value[1] << 8 | (uint)value[2] << 16 | (uint)value[3] << 24;
+
+    private static void WriteUInt16(byte[] data, int offset, ushort value) =>
+        BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(offset, 2), value);
+
+    private static void WriteUInt32(byte[] data, int offset, uint value) =>
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), value);
+
+    private static void AssertColor(Color actual, Color expected, string label)
+    {
+        if (actual.ToArgb() != expected.ToArgb())
+            throw new InvalidDataException($"{label}: expected {expected}, got {actual}.");
+    }
+
+    private static void Assert(bool condition, string message)
+    {
+        if (!condition)
+            throw new InvalidDataException(message);
+    }
+
+    private static void ExpectInvalid(Func<DdsPreview> decode, string label)
+    {
+        try
+        {
+            using var decoded = decode();
+        }
+        catch (InvalidDataException)
+        {
+            return;
+        }
+        throw new InvalidDataException($"Expected invalid-data rejection for {label}.");
+    }
+
+    private static void ExpectUnsupported(Func<DdsPreview> decode, string label)
+    {
+        try
+        {
+            using var decoded = decode();
+        }
+        catch (NotSupportedException)
+        {
+            return;
+        }
+        throw new InvalidDataException($"Expected unsupported-layout rejection for {label}.");
     }
 }
 

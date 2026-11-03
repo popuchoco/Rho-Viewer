@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.5` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.6` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -39,6 +39,9 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 ### Resource preview and analysis
 
 - Preview PNG, JPG/JPEG, BMP, and GIF images.
+- Preview the top mip of common 2D DDS textures, including BC1/DXT1, BC2/DXT3, BC3/DXT5, BC4/ATI1, BC5/ATI2, common DX10 RGBA/BGRA formats, and legacy RGB/luminance masks.
+- DDS previews are bounded to 128 MiB input and 128 MiB decoded pixels. Cubemaps, volume textures, texture arrays, BC6H, BC7, and other unsupported formats remain available through raw export/HEX preview.
+- DDS format behavior was cross-checked against the public [spnda/dds_image](https://github.com/spnda/dds_image) and [paroj/nv_dds](https://github.com/paroj/nv_dds) references; the application uses its own decoder and does not bundle their code.
 - Provide text and HEX fallback views for text and unknown binary resources.
 - Attempt to parse KSV recording title, track, event type, recorder, player, and recording data sections.
 - Classify KSV recordings separately from audio, and classify `.1s` resources as model/scene resources.
@@ -100,7 +103,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Interface and settings
 
 - Use a fixed light theme for predictable native WinForms contrast.
-- Present the current interface in Traditional Chinese (zh-TW); selectable additional locales are not implemented yet.
+- Offer HanS, HanT, KR, and EN interface packages. The language selection is saved in the existing configuration file and applied after restarting the app.
 - Use PerMonitorV2 high-DPI support.
 - Resize the left and right layout with the window while preserving the splitter ratio and usable minimum widths.
 - Save the normal window size and splitter ratio when the application closes normally.
@@ -114,7 +117,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
-2. Download `RhoViewerPortable_v0.3.5_win-x64.zip` from the [v0.3.5 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.5) and extract it.
+2. Download `RhoViewerPortable_v0.3.6_win-x64.zip` from the [v0.3.6 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.6) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -133,6 +136,7 @@ RhoViewerPortable-Source/
 ├── rho_probe.py
 ├── RhoViewerPortable/
 │   ├── RhoViewerPortable.csproj
+│   ├── DdsImageDecoder.cs
 │   ├── LanguageManager.cs
 │   ├── languages/
 │   │   ├── zh-Hans.xml
@@ -253,7 +257,7 @@ RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 - `--self-test`: opens specified `.rho`, `.rho5`, or `.lpk` archives and checks representative decoded image/audio resources; for LPK it reads every entry and checks the stored size and MD5.
 - `--smoke-load`: creates the WinForms main window, loads the specified archive, and closes automatically to detect startup or loading crashes.
 
-For independent malformed-input, updater-security, CRC, UI-state, and complete archive-corpus tests, use the separate `RhoViewerPortable.Tests` project documented above. This keeps test-only switches out of the released application. Run `RhoViewerPortable.Tests.dll --archive-corpus --sha256 <dataRoot> [otherDataRoot ...]` to print a deterministic aggregate SHA-256 fingerprint over normalized relative archive paths, entry paths, and decoded entry bytes. The fingerprint is useful for repeatability/regression comparison; it is not an authenticity check unless compared with a trusted baseline.
+For independent malformed-input, updater-security, CRC, UI-state, language-persistence, DDS-decoder, and complete archive-corpus tests, use the separate `RhoViewerPortable.Tests` project documented above. This keeps test-only switches out of the released application. Run `RhoViewerPortable.Tests.dll --archive-corpus --sha256 <dataRoot> [otherDataRoot ...]` to print a deterministic aggregate SHA-256 fingerprint over normalized relative archive paths, entry paths, and decoded entry bytes. The fingerprint is useful for repeatability/regression comparison; it is not an authenticity check unless compared with a trusted baseline.
 
 ## Architecture overview
 
@@ -262,6 +266,8 @@ MainForm (WinForms UI)
 ├── AppSettings / AppLogger
 ├── RhoReaderCore
 │   └── local KartLibrary / RhoArchive / Rho5Archive / RhoFolder / RhoFile
+├── DdsImageDecoder
+│   └── bounded top-mip 2D DDS software preview
 ├── ResourceAnalyzers
 │   ├── KSV summary
 │   ├── OGG Vorbis / Opus metadata
@@ -323,6 +329,8 @@ Acknowledgements:
 6. Royal: for the batch-tool adaptation reference.
 7. [`nixliuxin/KartRider-Tools`](https://github.com/nixliuxin/KartRider-Tools): as a high-level reference for `.1s` resource analysis and conversion scope. No code or binaries from this project are included or copied; Rho Viewer’s `.1s` support remains experimental marker fingerprinting only.
 8. [`VT-Tuzki/kartrider_model_1s_to_obj`](https://github.com/VT-Tuzki/kartrider_model_1s_to_obj): for its MIT-licensed public `.1s` marker/format research, referenced for the read-only marker probe. No parser or OBJ exporter code is copied or bundled; the project’s MIT notice is recorded in `THIRD_PARTY_NOTICES.txt`.
+9. [`spnda/dds_image`](https://github.com/spnda/dds_image): for public DDS header/mipmap and format reference. The project is MIT-licensed; Rho Viewer uses an independent C# decoder and does not include its code.
+10. [`paroj/nv_dds`](https://github.com/paroj/nv_dds): for public legacy DDS supported-format notes. No source code or binaries are copied; the upstream source identifies NVIDIA-provided code and links its General License.
 
 The LPK attributions refer to user-provided reference materials. The reference utilities' source code, binaries, and game sample packages are not redistributed in this project.
 The original RhoDump executable, archive, and user-provided game samples are not redistributed in this package.

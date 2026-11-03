@@ -1127,7 +1127,20 @@ internal sealed class MainForm : Form
                 return;
 
             var info = BuildItemInfo(item, bytes.Length);
-            if (item.Extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif")
+            if (item.Extension == ".dds")
+            {
+                using var decoded = await Task.Run(() => DdsImageDecoder.Decode(bytes));
+                if (generation != _previewGeneration || IsDisposed)
+                    return;
+
+                var bitmap = decoded.TakeBitmap();
+                _currentBitmap = bitmap;
+                _previewImage.Image = bitmap;
+                _previewImage.Visible = true;
+                _previewText.Visible = false;
+                _previewTitle.Text = $"{item.Name}  ·  DDS {bitmap.Width} × {bitmap.Height}  ·  {decoded.Format}  ·  {FormatSize(bytes.Length)}";
+            }
+            else if (item.Extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif")
             {
                 using var stream = new MemoryStream(bytes, writable: false);
                 using var source = Image.FromStream(stream);

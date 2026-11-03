@@ -122,3 +122,19 @@ packages are not included or redistributed by Rho Viewer Portable.
 黑黑de臉蛋's 臉蛋看看 (RhoDump) is acknowledged for historical program
 context and research sample source. The original executable, archive, and
 user-provided game samples are not redistributed in this package.
+
+6. DDS format and decoder references
+------------------------------------
+
+- spnda/dds_image: https://github.com/spnda/dds_image (MIT). Its public DDS
+  header, mipmap, and format documentation was used as a format reference.
+- paroj/nv_dds: https://github.com/paroj/nv_dds. Its public loader description
+  and supported-format notes were used as a compatibility reference. The
+  upstream source identifies NVIDIA-provided code and links to NVIDIA's
+  General License; no nv_dds or NVIDIA source code is copied or bundled here.
+- Microsoft DDS Programming Guide:
+  https://learn.microsoft.com/en-us/windows/win32/direct3ddds/dx-graphics-dds-pguide
+
+RhoViewerPortable/DdsImageDecoder.cs is an independent, bounded C# software
+decoder. No implementation code, headers, binaries, or assets from either
+referenced project are redistributed by Rho Viewer Portable.
