@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.8` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.9` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -34,6 +34,7 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Show loaded archives and the internal folder tree on the left, with a breadcrumb and resource list on the right.
 - Preserve the original archive order for the resource list and folder tree; manual sorting is intentionally not provided.
 - Filter by file name, path, archive name, resource category, or extension. Category and extension filters can be combined.
+- Render the resource list in virtual mode so only visible grid cells are requested instead of materializing a DataGridView row for every resource; the grid is double-buffered and suppresses redraw while its virtual row count changes.
 - Support Select All, Invert Selection, and the `Ctrl+F`, `Ctrl+A`, `Ctrl+I`, `Ctrl+E`, and `Esc` shortcuts.
 
 ### Resource preview and analysis
@@ -119,7 +120,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
-2. Download `RhoViewerPortable_v0.3.8_win-x64.zip` from the [v0.3.8 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.8) and extract it.
+2. Download `RhoViewerPortable_v0.3.9_win-x64.zip` from the [v0.3.9 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.9) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -320,6 +321,7 @@ KartRider `.bml` resources are not ordinary XML documents. The current preview d
 - LPK support is limited to the tested v4 table layout (flags 6/7, zero sections); LPK creation, repacking, and other variants are not supported.
 - KSV fields and text encoding may vary by game version and require more fixtures for cross-version validation.
 - The archive decoding backend currently materializes each resource as a byte array; resources over 256 MiB are rejected rather than streamed. Incremental archive streaming remains future work.
+- Virtual mode reduces UI row-object and repaint costs for large resource lists, but filtering still scans loaded resource metadata; Select All and Invert Selection remain proportional to the number of visible rows.
 - `.1s` support is limited to experimental marker fingerprinting; it does not export OBJ/USD or fully parse model geometry.
 - Game update availability depends on the region's patch service and the selected installation's `KartRider.pin`. The updater currently supports full-file NFO200 updates only; delta patching is intentionally not enabled.
 - Actual audio playback depends on the user's installed player and codecs.

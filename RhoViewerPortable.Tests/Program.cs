@@ -8,6 +8,7 @@ namespace RhoViewerPortable.Tests;
 
 internal static class Program
 {
+    [STAThread]
     private static int Main(string[] args)
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -27,6 +28,7 @@ internal static class Program
         failures += RunSuite("BML binary XML-like parser tests", BmlAnalyzerTests.Run);
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
+        failures += RunSuite("large virtual resource grid tests", VirtualGridTests.Run);
         failures += RunSuite("bounded preview byte-cache tests", PreviewByteCacheTests.Run);
         failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
         failures += RunSuite("DDS decoding and malformed-input tests", DdsDecoderTests.Run);
@@ -995,6 +997,42 @@ internal static class GeneralTests
         }
         if (state.IsActive(UiMutationKind.ResourceTreeRebuild))
             throw new InvalidDataException("UI mutation state was not restored after exception unwind.");
+    }
+}
+
+internal static class VirtualGridTests
+{
+    public static void Run()
+    {
+        using var grid = new BufferedDataGridView
+        {
+            VirtualMode = true,
+            AllowUserToAddRows = false,
+            ReadOnly = true
+        };
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Path" });
+        grid.CreateControl();
+        _ = grid.Handle;
+
+        grid.BeginUpdate();
+        try
+        {
+            grid.RowCount = 275_507;
+        }
+        finally
+        {
+            grid.EndUpdate();
+        }
+
+        Assert(grid.RowCount == 275_507, "virtual grid should expose the full resource count without adding row objects");
+        grid.RowCount = 0;
+        Assert(grid.RowCount == 0, "virtual grid should clear rows by setting RowCount to zero");
+    }
+
+    private static void Assert(bool condition, string message)
+    {
+        if (!condition)
+            throw new InvalidOperationException(message);
     }
 }
 

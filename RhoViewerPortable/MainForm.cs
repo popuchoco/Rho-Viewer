@@ -13,9 +13,10 @@ internal sealed class MainForm : Form
 
     private readonly List<RhoArchiveContext> _contexts = new();
     private readonly List<RhoItem> _allItems = new();
+    private List<RhoItem> _visibleItems = new();
     private readonly ListBox _archiveList = new();
     private readonly TreeView _resourceTree = new();
-    private readonly DataGridView _fileGrid = new();
+    private readonly BufferedDataGridView _fileGrid = new();
     private readonly TextBox _searchBox = new();
     private readonly ComboBox _resourceKindFilter = new();
     private readonly ComboBox _extensionFilter = new();
@@ -447,16 +448,54 @@ internal sealed class MainForm : Form
         _fileGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _fileGrid.MultiSelect = true;
         _fileGrid.ReadOnly = true;
+        _fileGrid.VirtualMode = true;
         _fileGrid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "封包", Width = 150, Name = "Archive" });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源路徑", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 240, Name = "Path" });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源類別", Width = 128, Name = "Type" });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "大小", Width = 92, Name = "Size" });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "保護方式", Width = 145, Name = "Property" });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "封包", Width = 150, Name = "Archive", SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源路徑", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 240, Name = "Path", SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源類別", Width = 128, Name = "Type", SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "大小", Width = 92, Name = "Size", SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "保護方式", Width = 145, Name = "Property", SortMode = DataGridViewColumnSortMode.NotSortable });
+    }
+
+    private void FileGrid_CellValueNeeded(object? sender, DataGridViewCellValueEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.RowIndex >= _visibleItems.Count)
+            return;
+
+        var item = _visibleItems[e.RowIndex];
+        e.Value = e.ColumnIndex switch
+        {
+            0 => item.Owner.DisplayName,
+            1 => item.RelativePath,
+            2 => $"{ResourceClassifier.GetDisplayName(item.Kind)} ({item.Extension})",
+            3 => FormatSize(item.Size),
+            4 => item.Property,
+            _ => null
+        };
+    }
+
+    private RhoItem? GetVisibleItem(DataGridViewRow? row)
+    {
+        if (row is null || row.Index < 0 || row.Index >= _visibleItems.Count)
+            return null;
+
+        return _visibleItems[row.Index];
+    }
+
+    private List<RhoItem> GetSelectedVisibleItems()
+    {
+        var selectedItems = new List<RhoItem>(_fileGrid.SelectedRows.Count);
+        foreach (DataGridViewRow row in _fileGrid.SelectedRows)
+        {
+            if (GetVisibleItem(row) is { } item)
+                selectedItems.Add(item);
+        }
+        return selectedItems;
     }
 
     private void WireEvents()
     {
+        _fileGrid.CellValueNeeded += FileGrid_CellValueNeeded;
         _archiveList.SelectedIndexChanged += (_, _) =>
         {
             _selectedFolderPath = string.Empty;
@@ -483,9 +522,9 @@ internal sealed class MainForm : Form
         _extensionFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
         _fileGrid.SelectionChanged += (_, _) =>
         {
-            UpdateButtons();
             if (_uiMutations.IsActive(UiMutationKind.SelectionBatch))
                 return;
+            UpdateButtons();
             SchedulePreviewSelected();
         };
         _mainSplit.SplitterMoved += (_, _) => CaptureSplitterRatio();
@@ -630,7 +669,7 @@ internal sealed class MainForm : Form
 
     private void SelectAllVisibleRows()
     {
-        if (_busy || _fileGrid.Rows.Count == 0)
+        if (_busy || _fileGrid.RowCount == 0)
             return;
 
         using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
@@ -640,7 +679,7 @@ internal sealed class MainForm : Form
 
     private void InvertVisibleRows()
     {
-        if (_busy || _fileGrid.Rows.Count == 0)
+        if (_busy || _fileGrid.RowCount == 0)
             return;
 
         using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
@@ -1082,11 +1121,17 @@ internal sealed class MainForm : Form
 
             using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
             {
-                _fileGrid.Rows.Clear();
-                foreach (var item in filtered)
+                _fileGrid.BeginUpdate();
+                try
                 {
-                    var rowIndex = _fileGrid.Rows.Add(item.Owner.DisplayName, item.RelativePath, $"{ResourceClassifier.GetDisplayName(item.Kind)} ({item.Extension})", FormatSize(item.Size), item.Property);
-                    _fileGrid.Rows[rowIndex].Tag = item;
+                    _fileGrid.CurrentCell = null;
+                    _fileGrid.RowCount = 0;
+                    _visibleItems = filtered;
+                    _fileGrid.RowCount = _visibleItems.Count;
+                }
+                finally
+                {
+                    _fileGrid.EndUpdate();
                 }
             }
 
@@ -1140,7 +1185,7 @@ internal sealed class MainForm : Form
         var selectedRow = _fileGrid.CurrentRow is { Selected: true } currentRow
             ? currentRow
             : (_fileGrid.SelectedRows.Count > 0 ? _fileGrid.SelectedRows[0] : null);
-        var item = selectedRow?.Tag as RhoItem;
+        var item = GetVisibleItem(selectedRow);
         var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context ?? _treeContextFilter;
         DisposePreviewBitmap();
         _previewImage.Visible = false;
@@ -1374,7 +1419,7 @@ internal sealed class MainForm : Form
 
     private async Task ExportSelectedAsync()
     {
-        var items = _fileGrid.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Tag as RhoItem).Where(item => item is not null).Cast<RhoItem>().ToList();
+        var items = GetSelectedVisibleItems();
         if (items.Count == 0)
         {
             MessageBox.Show(this, "請先在清單中選取至少一個資源。", "尚未選取資源", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1454,10 +1499,14 @@ internal sealed class MainForm : Form
 
     private RhoItem? GetSelectedAudioItem()
     {
-        return _fileGrid.SelectedRows
-            .Cast<DataGridViewRow>()
-            .Select(row => row.Tag as RhoItem)
-            .FirstOrDefault(item => item is not null && IsAudioExtension(item.Extension));
+        foreach (DataGridViewRow row in _fileGrid.SelectedRows)
+        {
+            var item = GetVisibleItem(row);
+            if (item is not null && IsAudioExtension(item.Extension))
+                return item;
+        }
+
+        return null;
     }
 
     private static bool IsAudioExtension(string extension) => extension is ".ogg" or ".flac" or ".wav" or ".mp3";
@@ -1789,7 +1838,17 @@ internal sealed class MainForm : Form
         _selectedFolderPath = string.Empty;
         _treeContextFilter = null;
         UpdateBreadcrumb();
-        _fileGrid.Rows.Clear();
+        _fileGrid.BeginUpdate();
+        try
+        {
+            _fileGrid.CurrentCell = null;
+            _visibleItems.Clear();
+            _fileGrid.RowCount = 0;
+        }
+        finally
+        {
+            _fileGrid.EndUpdate();
+        }
         _resourceKindFilter.Items.Clear();
         _resourceKindFilter.Items.Add(AllResourceKinds);
         _resourceKindFilter.SelectedIndex = 0;
@@ -1831,8 +1890,8 @@ internal sealed class MainForm : Form
         _exportSelectedButton.Enabled = !_busy && _fileGrid.SelectedRows.Count > 0;
         _exportAllButton.Enabled = !_busy && _allItems.Count > 0;
         _playAudioButton.Enabled = !_busy && GetSelectedAudioItem() is not null;
-        _selectAllButton.Enabled = !_busy && _fileGrid.Rows.Count > 0;
-        _invertSelectionButton.Enabled = !_busy && _fileGrid.Rows.Count > 0;
+        _selectAllButton.Enabled = !_busy && _fileGrid.RowCount > 0;
+        _invertSelectionButton.Enabled = !_busy && _fileGrid.RowCount > 0;
         _stopAudioButton.Visible = _playbackProcess is not null || _activePlaybackTempDirectory is not null;
         _stopAudioButton.Enabled = !_busy && _stopAudioButton.Visible;
         _cancelExportButton.Visible = _exportCts is not null;

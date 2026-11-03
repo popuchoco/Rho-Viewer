@@ -28,7 +28,7 @@ jobs:
       - name: Build
         run: dotnet build RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj --configuration Release --no-restore
 
-      - name: Run parser, updater security, CRC/UI, localization, and DDS tests
+      - name: Run parser, updater security, UI virtualization/cache, localization, and DDS tests
         run: dotnet RhoViewerPortable.Tests/bin/Release/net10.0-windows/RhoViewerPortable.Tests.dll
 
       - name: Upload test runner for local real-data validation
