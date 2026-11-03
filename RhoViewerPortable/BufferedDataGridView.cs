@@ -49,6 +49,6 @@ internal sealed class BufferedDataGridView : DataGridView
         SendMessage(Handle, WmSetRedraw, enabled ? new IntPtr(1) : IntPtr.Zero, IntPtr.Zero);
     }
 
-    [DllImport("user32.dll", ExactSpelling = true)]
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 }
