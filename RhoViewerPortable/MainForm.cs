@@ -1692,10 +1692,11 @@ internal sealed class MainForm : Form
 
     private void ShowAbout()
     {
+        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "未知";
         MessageBox.Show(this,
-            "Rho Viewer Portable 0.2.0\n\n" +
-            "用於讀取、預覽與匯出 KartRider Rho 封包。\n" +
-            "支援從資料夾遞迴掃描 .rho，也可直接多選檔案。\n\n" +
+            $"Rho Viewer Portable {version}\n\n" +
+            "用於讀取、預覽與匯出 KartRider .rho、.rho5 與 .lpk 封包。\n" +
+            "支援資源瀏覽、分析、預覽、匯出，以及遊戲檔案更新。\n\n" +
             "音效會先解出暫存檔，再交給 portable\\Players 或 Windows 預設播放器。\n" +
             "格式解碼參考 xpoi5010/Kartrider-File-Reader。\n" +
             "第三方來源與 GPL-3.0 授權見 THIRD_PARTY_NOTICES.txt。",
