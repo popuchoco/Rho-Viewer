@@ -110,8 +110,10 @@ namespace KartLibrary.Data
                 using (MemoryStream ms = new MemoryStream(processedData))
                 {
                     processedData = new byte[DecompressSize];
-                    Ionic.Zlib.ZlibStream zs = new Ionic.Zlib.ZlibStream(ms, Ionic.Zlib.CompressionMode.Decompress);
-                    zs.Read(processedData, 0, processedData.Length);
+                    using ZLibStream zs = new ZLibStream(ms, CompressionMode.Decompress);
+                    zs.ReadExactly(processedData);
+                    if (zs.ReadByte() != -1)
+                        throw new InvalidDataException("KRData expands beyond its declared size.");
                 }
             }
             uint CheckHash = Adler.Adler32(0, processedData, 0, processedData.Length);

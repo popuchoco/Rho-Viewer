@@ -86,8 +86,10 @@ namespace KartLibrary.File
                 using (MemoryStream ms = new MemoryStream(BlockData))
                 {
                     BlockData = new byte[BlockInfo.UncompressedSize];
-                    Ionic.Zlib.ZlibStream ds = new Ionic.Zlib.ZlibStream(ms, Ionic.Zlib.CompressionMode.Decompress);
-                    ds.Read(BlockData, 0, BlockData.Length);
+                    using ZLibStream ds = new ZLibStream(ms, CompressionMode.Decompress);
+                    ds.ReadExactly(BlockData);
+                    if (ds.ReadByte() != -1)
+                        throw new InvalidDataException("Rho block expands beyond its declared size.");
                 }
             }
             if ((BlockInfo.BlockProperty & RhoBlockProperty.PartialEncrypted) == RhoBlockProperty.PartialEncrypted) // Encrypted or PartialEncrypted

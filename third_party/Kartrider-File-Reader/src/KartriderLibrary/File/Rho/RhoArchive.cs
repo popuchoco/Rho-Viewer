@@ -437,7 +437,7 @@ namespace KartLibrary.File
                 using(MemoryStream memStream = new MemoryStream(outData))
                 {
                     outData = new byte[dataInfo.UncompressedSize];
-                    using Ionic.Zlib.ZlibStream decompressStream = new Ionic.Zlib.ZlibStream(memStream, Ionic.Zlib.CompressionMode.Decompress);
+                    using ZLibStream decompressStream = new ZLibStream(memStream, CompressionMode.Decompress);
                     var position = 0;
                     while (position < outData.Length)
                     {
@@ -535,10 +535,8 @@ namespace KartLibrary.File
                     {
                         using (MemoryStream ms = new MemoryStream())
                         {
-                            Ionic.Zlib.ZlibStream compressStream = new Ionic.Zlib.ZlibStream(ms, Ionic.Zlib.CompressionMode.Compress, Ionic.Zlib.CompressionLevel.BestCompression ,true);
-                            compressStream.Write(fileData, 0, fileData.Length);
-                            compressStream.Flush();
-                            compressStream.Close();
+                            using (ZLibStream compressStream = new ZLibStream(ms, CompressionLevel.SmallestSize, leaveOpen: true))
+                                compressStream.Write(fileData, 0, fileData.Length);
                             fileData = ms.ToArray();
                         }
                     }

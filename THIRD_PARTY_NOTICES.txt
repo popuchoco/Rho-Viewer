@@ -30,6 +30,18 @@ length, and per-entry MD5 validation. These changes remain subject to GPL-3.0.
 The full GPL-3.0 text is included in LICENSE. The source package also keeps
 the upstream LICENSE file beside the local KartLibrary source.
 
+DotNetZip 1.16.0 dependency removal:
+The vendored reader previously used DotNetZip's Ionic.Zlib.ZlibStream for
+legacy Rho/Rho5 compression and decompression. Those call sites have been
+migrated to the .NET System.IO.Compression.ZLibStream and the DotNetZip
+PackageReference has been removed. A source audit found no ZipFile or
+ZipEntry.Extract archive extraction calls in the application, vendored reader,
+or tests. NVD describes CVE-2024-48510 as a path traversal in ZipEntry.Extract:
+https://nvd.nist.gov/vuln/detail/CVE-2024-48510
+This notice records the migration rationale; confirm the current package graph
+with NuGet restore/audit output. Any further change to these zlib paths must be
+validated against real Rho, Rho5, and LPK corpora.
+
 2. KartRider .1s marker and feature-scope references
 ----------------------------------------------------
 

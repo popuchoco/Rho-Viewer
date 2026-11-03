@@ -7,9 +7,9 @@ namespace RhoViewerPortable;
 internal static class ResourceAnalyzers
 {
     internal const int MaxAnalysisBytes = 64 * 1024 * 1024;
-    private const int MaxOggHeaderPacketBytes = 2 * 1024 * 1024;
+    internal const int MaxOggHeaderPacketBytes = 2 * 1024 * 1024;
     private const int MaxOggHeaderPackets = 4;
-    private const int MaxFlacMetadataBlocks = 4096;
+    internal const int MaxFlacMetadataBlocks = 4096;
     private const int MaxCommentEntries = 10_000;
 
     public static string Analyze(RhoItem item, byte[] data)

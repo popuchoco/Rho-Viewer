@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using RhoViewerPortable;
 
@@ -14,7 +15,7 @@ internal static class Program
 
         if (args.Length > 0)
         {
-            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests [--archive-corpus dataRoot [dataRoot ...]]");
+            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests [--archive-corpus [--sha256] dataRoot [dataRoot ...]]");
             return 2;
         }
 
@@ -74,6 +75,16 @@ internal static class ParserInputTests
 
         var malformedComments = BuildFlacWithCommentBlock(new byte[] { 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0 });
         AssertMalformedFlac(malformedComments, "FLAC Vorbis vendor length overflow");
+
+        var atBlockLimit = ResourceAnalyzers.AnalyzeExtension(".flac", BuildFlacWithPaddingBlocks(ResourceAnalyzers.MaxFlacMetadataBlocks));
+        Assert(atBlockLimit.Contains($"metadata blocks：{ResourceAnalyzers.MaxFlacMetadataBlocks}", StringComparison.Ordinal),
+            "FLAC parser did not accept the exact metadata-block limit");
+        Assert(!atBlockLimit.Contains("區塊順序、長度或數量無效", StringComparison.Ordinal),
+            "FLAC parser rejected the exact metadata-block limit");
+
+        var aboveBlockLimit = ResourceAnalyzers.AnalyzeExtension(".flac", BuildFlacWithPaddingBlocks(ResourceAnalyzers.MaxFlacMetadataBlocks + 1));
+        Assert(aboveBlockLimit.Contains("區塊順序、長度或數量無效", StringComparison.Ordinal),
+            "FLAC parser did not reject metadata blocks above its configured limit");
     }
 
     private static void AssertMalformedFlac(byte[] bytes, string label)
@@ -114,6 +125,14 @@ internal static class ParserInputTests
 
         var oversizedVendor = BuildVorbisComments(uint.MaxValue, 0);
         _ = ResourceAnalyzers.AnalyzeExtension(".ogg", BuildOggPage(BuildVorbisIdentification(), oversizedVendor));
+
+        var atPacketLimit = ResourceAnalyzers.AnalyzeExtension(".ogg", BuildOggPagesWithPacketLength(ResourceAnalyzers.MaxOggHeaderPacketBytes));
+        Assert(!atPacketLimit.Contains("超過標頭分析上限", StringComparison.Ordinal),
+            "OGG parser rejected a packet exactly at its configured limit");
+
+        var abovePacketLimit = ResourceAnalyzers.AnalyzeExtension(".ogg", BuildOggPagesWithPacketLength(ResourceAnalyzers.MaxOggHeaderPacketBytes + 1));
+        Assert(abovePacketLimit.Contains("超過標頭分析上限", StringComparison.Ordinal),
+            "OGG parser did not reject a packet above its configured limit");
     }
 
     private static void AssertMalformedOgg(byte[] bytes, string label)
@@ -237,6 +256,24 @@ internal static class ParserInputTests
         return result;
     }
 
+    private static byte[] BuildFlacWithPaddingBlocks(int blockCount)
+    {
+        if (blockCount < 1)
+            throw new ArgumentOutOfRangeException(nameof(blockCount));
+
+        var streamInfo = BuildMinimalFlac();
+        var result = new byte[streamInfo.Length + (blockCount - 1) * 4];
+        streamInfo.CopyTo(result, 0);
+        result[4] = blockCount == 1 ? (byte)0x80 : (byte)0;
+        var offset = streamInfo.Length;
+        for (var index = 1; index < blockCount; index++)
+        {
+            result[offset] = (byte)((index == blockCount - 1 ? 0x80 : 0) | 1); // zero-length padding block
+            offset += 4;
+        }
+        return result;
+    }
+
     private static byte[] BuildMinimalOneS()
     {
         var result = new byte[40];
@@ -276,6 +313,44 @@ internal static class ParserInputTests
         lacing.CopyTo(result, 27);
         payload.CopyTo(result, 27 + lacing.Count);
         return result;
+    }
+
+    private static byte[] BuildOggPagesWithPacketLength(int packetLength)
+    {
+        if (packetLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(packetLength));
+
+        var fullSegments = packetLength / byte.MaxValue;
+        var finalSegmentLength = packetLength % byte.MaxValue;
+        var lacing = new byte[fullSegments + 1];
+        Array.Fill(lacing, byte.MaxValue);
+        lacing[^1] = (byte)finalSegmentLength; // a zero-length lace terminates exact multiples of 255
+
+        using var output = new MemoryStream();
+        var lacingOffset = 0;
+        var pageNumber = 0;
+        while (lacingOffset < lacing.Length)
+        {
+            var segmentCount = Math.Min(byte.MaxValue, lacing.Length - lacingOffset);
+            var payloadLength = 0;
+            for (var index = 0; index < segmentCount; index++)
+                payloadLength += lacing[lacingOffset + index];
+
+            var page = new byte[27 + segmentCount + payloadLength];
+            "OggS"u8.CopyTo(page);
+            page[5] = (byte)(pageNumber == 0 ? 0x02 : 0x01); // BOS on first page, continuation thereafter
+            if (lacingOffset + segmentCount == lacing.Length)
+                page[5] |= 0x04; // EOS
+            BinaryPrimitives.WriteUInt32LittleEndian(page.AsSpan(22, 4), (uint)pageNumber);
+            page[26] = (byte)segmentCount;
+            lacing.AsSpan(lacingOffset, segmentCount).CopyTo(page.AsSpan(27));
+            output.Write(page);
+
+            lacingOffset += segmentCount;
+            pageNumber++;
+        }
+
+        return output.ToArray();
     }
 
     private static byte[] BuildVorbisIdentification()
@@ -496,9 +571,13 @@ internal static class ArchiveCorpusTest
 
     public static int Run(string[] roots)
     {
+        var includeSha256 = roots.Length > 0 && string.Equals(roots[0], "--sha256", StringComparison.OrdinalIgnoreCase);
+        if (includeSha256)
+            roots = roots.Skip(1).ToArray();
+
         if (roots.Length == 0)
         {
-            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests --archive-corpus dataRoot [dataRoot ...]");
+            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests --archive-corpus [--sha256] dataRoot [dataRoot ...]");
             return 2;
         }
 
@@ -520,6 +599,7 @@ internal static class ArchiveCorpusTest
                 var candidates = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
                     .Where(path => SupportedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(path => path, StringComparer.Ordinal)
                     .ToArray();
                 var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 paths = candidates.Select(path => Path.GetExtension(path).Equals(".rho5", StringComparison.OrdinalIgnoreCase)
@@ -537,6 +617,7 @@ internal static class ArchiveCorpusTest
             }
 
             var rootCounts = SupportedExtensions.ToDictionary(extension => extension, _ => new CorpusTotals(), StringComparer.OrdinalIgnoreCase);
+            using var corpusHash = includeSha256 ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : null;
             var processed = 0;
             foreach (var path in paths)
             {
@@ -548,6 +629,11 @@ internal static class ArchiveCorpusTest
                     context = RhoReader.Open(path, "auto");
                     bucket.Archives++;
                     totals[extension].Archives++;
+                    if (corpusHash is not null)
+                    {
+                        var relativeArchivePath = Path.GetRelativePath(root, path).Replace('\\', '/');
+                        AppendHashRecord(corpusHash, 0xA1, Encoding.UTF8.GetBytes(relativeArchivePath));
+                    }
                     foreach (var item in context.Items)
                     {
                         try
@@ -555,6 +641,11 @@ internal static class ArchiveCorpusTest
                             var bytes = item.ReadBytes();
                             if (bytes.Length != item.Size)
                                 throw new InvalidDataException($"declared {item.Size} bytes, decoded {bytes.Length} bytes");
+                            if (corpusHash is not null)
+                            {
+                                AppendHashRecord(corpusHash, 0xE1, Encoding.UTF8.GetBytes(item.RelativePath.Replace('\\', '/')));
+                                AppendHashRecord(corpusHash, 0xE2, bytes);
+                            }
                             bucket.Entries++;
                             totals[extension].Entries++;
                             bucket.DecodedBytes += bytes.LongLength;
@@ -592,6 +683,13 @@ internal static class ArchiveCorpusTest
             }
 
             Console.WriteLine($"RESULT {root}: {FormatTotals(rootCounts)}");
+            if (corpusHash is not null)
+            {
+                var label = rootCounts.Values.Any(value => value.ArchiveFailures > 0 || value.EntryFailures > 0)
+                    ? "PARTIAL_SHA256"
+                    : "SHA256";
+                Console.WriteLine($"{label} decoded corpus {Path.GetFullPath(root)}: {Convert.ToHexString(corpusHash.GetHashAndReset()).ToLowerInvariant()}");
+            }
         }
 
         Console.WriteLine($"TOTAL {FormatTotals(totals)}; archive failures={failedArchives:N0}; entry failures={failedEntries:N0}");
@@ -604,6 +702,15 @@ internal static class ArchiveCorpusTest
             ? "REAL DATA READ/DECODE VALIDATION PASSED"
             : "REAL DATA READ/DECODE VALIDATION FAILED");
         return failedArchives == 0 && failedEntries == 0 ? 0 : 1;
+    }
+
+    private static void AppendHashRecord(IncrementalHash hash, byte kind, ReadOnlySpan<byte> value)
+    {
+        Span<byte> recordHeader = stackalloc byte[9];
+        recordHeader[0] = kind;
+        BinaryPrimitives.WriteUInt64LittleEndian(recordHeader[1..], (ulong)value.Length);
+        hash.AppendData(recordHeader);
+        hash.AppendData(value);
     }
 
     private static string FormatTotals(IReadOnlyDictionary<string, CorpusTotals> totals)

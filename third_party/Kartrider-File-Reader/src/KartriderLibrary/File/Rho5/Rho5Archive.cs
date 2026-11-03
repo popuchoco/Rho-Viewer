@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -310,10 +311,8 @@ namespace KartLibrary.File
                 byte[] encryptKey = Rho5Key.GetPackedFileKey(fileChksum, Rho5Key.GetFileKey_U1(mixingStr), file.FullName);
                 using (MemoryStream memStream = new MemoryStream())
                 {
-                    Ionic.Zlib.ZlibStream compressStream = new Ionic.Zlib.ZlibStream(memStream, Ionic.Zlib.CompressionMode.Compress, true);
-                    compressStream.Write(data, 0, data.Length);
-                    compressStream.Flush();
-                    compressStream.Close();
+                    using (ZLibStream compressStream = new ZLibStream(memStream, CompressionLevel.Optimal, leaveOpen: true))
+                        compressStream.Write(data, 0, data.Length);
                     processedData = memStream.ToArray();
                     Rho5EncryptStream encryptStream = new Rho5EncryptStream(memStream, encryptKey);
                     encryptStream.Seek(0, SeekOrigin.Begin);
@@ -472,7 +471,7 @@ namespace KartLibrary.File
             using (MemoryStream memStream = new MemoryStream(compressedData))
             {
                 decryptStream = new Rho5DecryptStream(memStream, handler._key);
-                using Ionic.Zlib.ZlibStream decompressStream = new Ionic.Zlib.ZlibStream(decryptStream, Ionic.Zlib.CompressionMode.Decompress);
+                using ZLibStream decompressStream = new ZLibStream(decryptStream, CompressionMode.Decompress);
                 var position = 0;
                 while (position < decompressedData.Length)
                 {

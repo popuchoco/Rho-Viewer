@@ -7,3 +7,5 @@
 - Local use: `RhoViewerPortable.csproj` references this source project directly.
 
 The repository does not retain upstream Git metadata or use a Git submodule. The bundled `KartLibrary.csproj`, `LICENSE`, and `Encrypt/RhoKey.cs` file contents were checked against the revision anchor above. This is an anchor for provenance, not a claim that every file in the vendored tree is byte-for-byte identical to that commit. Before updating or replacing the vendored source, compare the complete source tree, review the GPL-3.0 obligations, and record any local patches here.
+
+Downstream security/compatibility changes include bounded exact decompression for Rho/Rho5 entries and replacing DotNetZip `Ionic.Zlib.ZlibStream` calls with .NET `System.IO.Compression.ZLibStream`. The DotNetZip PackageReference was removed; validate the change against real `.rho`, `.rho5`, and `.lpk` corpora before release.
