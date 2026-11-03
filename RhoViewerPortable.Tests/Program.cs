@@ -13,15 +13,18 @@ internal static class Program
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         if (args.Length > 0 && string.Equals(args[0], "--archive-corpus", StringComparison.OrdinalIgnoreCase))
             return ArchiveCorpusTest.Run(args.Skip(1).ToArray());
+        if (args.Length > 0 && string.Equals(args[0], "--bml-corpus", StringComparison.OrdinalIgnoreCase))
+            return BmlCorpusTest.Run(args.Skip(1).ToArray());
 
         if (args.Length > 0)
         {
-            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests [--archive-corpus [--sha256] dataRoot [dataRoot ...]]");
+            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests [--archive-corpus [--sha256] dataRoot [dataRoot ...] | --bml-corpus path [path ...]]");
             return 2;
         }
 
         var failures = 0;
         failures += RunSuite("resource parser malformed-input tests", ParserInputTests.Run);
+        failures += RunSuite("BML binary XML-like parser tests", BmlAnalyzerTests.Run);
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
         failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
@@ -685,6 +688,146 @@ internal static class ParserInputTests
     }
 }
 
+internal static class BmlAnalyzerTests
+{
+    public static void Run()
+    {
+        TestSyntheticTreeAndEscaping();
+        TestMalformedInputs();
+        TestDepthAndSizeLimits();
+        TestPreviewLimit();
+        TestDeterministicRandomInputs();
+    }
+
+    private static void TestSyntheticTreeAndEscaping()
+    {
+        var bytes = BuildDocument(new BmlNode("CaptionWindow", "", [new("title", "R&D <Race>")],
+        [
+            new("Label", "繁體中文 & <text>", [], []),
+            new("Panel", "", [], [new("TextButton", "Start", [new("id", "go")], [])])
+        ]));
+
+        var result = ResourceAnalyzers.AnalyzeExtension(".bml", bytes);
+        Assert(result.Contains("BML 二進位 XML-like 結構解析成功", StringComparison.Ordinal), "valid BML tree was not recognized");
+        Assert(result.Contains("根節點：CaptionWindow", StringComparison.Ordinal), "BML root tag was not reported");
+        Assert(result.Contains("節點：4", StringComparison.Ordinal), "BML node count was incorrect");
+        Assert(result.Contains("R&amp;D &lt;Race&gt;", StringComparison.Ordinal), "BML attribute was not escaped in generated XML");
+        Assert(result.Contains("繁體中文 &amp; &lt;text&gt;", StringComparison.Ordinal), "BML text was not escaped in generated XML");
+        Assert(ResourceClassifier.Classify(".bml") == ResourceKind.StructuredData, "BML classification changed");
+    }
+
+    private static void TestMalformedInputs()
+    {
+        AssertMalformed(Array.Empty<byte>(), "empty BML");
+        AssertMalformed(new byte[3], "truncated BML string length");
+
+        var negativeStringLength = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(negativeStringLength, -1);
+        AssertMalformed(negativeStringLength, "negative BML string length");
+
+        var truncatedString = new byte[6];
+        BinaryPrimitives.WriteInt32LittleEndian(truncatedString, 2);
+        AssertMalformed(truncatedString, "truncated BML UTF-16 string");
+
+        var invalidUtf16 = new byte[6];
+        BinaryPrimitives.WriteInt32LittleEndian(invalidUtf16, 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(invalidUtf16.AsSpan(4), 0xD800);
+        Assert(ResourceAnalyzers.AnalyzeExtension(".bml", invalidUtf16).Contains("不是有效的 UTF-16LE", StringComparison.Ordinal),
+            "invalid UTF-16 surrogate was not rejected");
+
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: true))
+        {
+            WriteBmlString(writer, "root");
+            WriteBmlString(writer, "");
+            writer.Write(-1);
+        }
+        AssertMalformed(stream.ToArray(), "negative BML attribute count");
+
+        var trailing = BuildDocument(new BmlNode("root", "", [], [] )).Concat(new byte[] { 0x7f }).ToArray();
+        Assert(ResourceAnalyzers.AnalyzeExtension(".bml", trailing).Contains("尾隨資料", StringComparison.Ordinal),
+            "trailing BML bytes were not rejected");
+    }
+
+    private static void TestDepthAndSizeLimits()
+    {
+        var nested = new BmlNode("n", "", [], []);
+        for (var depth = 1; depth < BmlAnalyzer.MaxDepth + 1; depth++)
+            nested = new BmlNode("n", "", [], [nested]);
+        Assert(ResourceAnalyzers.AnalyzeExtension(".bml", BuildDocument(nested)).Contains("深度超過上限", StringComparison.Ordinal),
+            "BML maximum nesting depth was not enforced");
+
+        var oversized = new byte[BmlAnalyzer.MaxBmlBytes + 1];
+        Assert(ResourceAnalyzers.AnalyzeExtension(".bml", oversized).Contains("資源過大", StringComparison.Ordinal),
+            "BML analyzer did not enforce its input cap");
+    }
+
+    private static void TestPreviewLimit()
+    {
+        var longText = new string('x', BmlAnalyzer.MaxPreviewChars * 2);
+        var result = ResourceAnalyzers.AnalyzeExtension(".bml", BuildDocument(new BmlNode("root", longText, [], [])));
+        Assert(result.Contains("XML 預覽已截斷", StringComparison.Ordinal), "oversized BML preview text was not truncated");
+        Assert(result.Length < BmlAnalyzer.MaxPreviewChars + 1_000, "BML preview output exceeded its bounded size");
+    }
+
+    private static void TestDeterministicRandomInputs()
+    {
+        var random = new Random(0x011A_2026);
+        for (var index = 0; index < 300; index++)
+        {
+            var bytes = new byte[random.Next(0, 512)];
+            random.NextBytes(bytes);
+            var result = ResourceAnalyzers.AnalyzeExtension(".bml", bytes);
+            Assert(!string.IsNullOrWhiteSpace(result), $"BML parser returned no result for deterministic mutation {index}");
+        }
+    }
+
+    private static void AssertMalformed(byte[] bytes, string label)
+    {
+        var result = ResourceAnalyzers.AnalyzeExtension(".bml", bytes);
+        Assert(result.Contains("無法解析", StringComparison.Ordinal) || result.Contains("不是有效的 UTF-16LE", StringComparison.Ordinal),
+            $"{label} did not produce a bounded parse failure");
+    }
+
+    private static byte[] BuildDocument(BmlNode root)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: true))
+            WriteNode(writer, root);
+        return stream.ToArray();
+    }
+
+    private static void WriteNode(BinaryWriter writer, BmlNode node)
+    {
+        WriteBmlString(writer, node.Name);
+        WriteBmlString(writer, node.Text);
+        writer.Write(node.Attributes.Length);
+        foreach (var attribute in node.Attributes)
+        {
+            WriteBmlString(writer, attribute.Name);
+            WriteBmlString(writer, attribute.Value);
+        }
+        writer.Write(node.Children.Length);
+        foreach (var child in node.Children)
+            WriteNode(writer, child);
+    }
+
+    private static void WriteBmlString(BinaryWriter writer, string value)
+    {
+        writer.Write(value.Length);
+        writer.Write(Encoding.Unicode.GetBytes(value));
+    }
+
+    private sealed record BmlNode(string Name, string Text, BmlAttribute[] Attributes, BmlNode[] Children);
+    private sealed record BmlAttribute(string Name, string Value);
+
+    private static void Assert(bool condition, string message)
+    {
+        if (!condition)
+            throw new InvalidDataException(message);
+    }
+}
+
 internal static class UpdaterSecurityTests
 {
     public static void Run()
@@ -851,6 +994,74 @@ internal static class GeneralTests
         }
         if (state.IsActive(UiMutationKind.ResourceTreeRebuild))
             throw new InvalidDataException("UI mutation state was not restored after exception unwind.");
+    }
+}
+
+internal static class BmlCorpusTest
+{
+    public static int Run(string[] paths)
+    {
+        if (paths.Length == 0)
+        {
+            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests --bml-corpus path [path ...]");
+            return 2;
+        }
+
+        var files = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
+        {
+            if (File.Exists(path))
+            {
+                if (string.Equals(Path.GetExtension(path), ".bml", StringComparison.OrdinalIgnoreCase))
+                    files.Add(Path.GetFullPath(path));
+                else
+                    Console.Error.WriteLine($"SKIP non-BML file: {path}");
+            }
+            else if (Directory.Exists(path))
+            {
+                foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                             .Where(file => string.Equals(Path.GetExtension(file), ".bml", StringComparison.OrdinalIgnoreCase)))
+                    files.Add(Path.GetFullPath(file));
+            }
+            else
+            {
+                Console.Error.WriteLine($"FAIL missing BML corpus path: {path}");
+                return 2;
+            }
+        }
+
+        if (files.Count == 0)
+        {
+            Console.Error.WriteLine("FAIL no .bml files found");
+            return 2;
+        }
+
+        var failures = 0;
+        long totalBytes = 0;
+        foreach (var file in files)
+        {
+            try
+            {
+                var bytes = File.ReadAllBytes(file);
+                totalBytes += bytes.Length;
+                var summary = ResourceAnalyzers.AnalyzeExtension(".bml", bytes);
+                if (summary.StartsWith("BML 二進位 XML-like 結構解析成功", StringComparison.Ordinal))
+                    Console.WriteLine($"PASS {file} ({bytes.Length:N0} bytes)");
+                else
+                {
+                    failures++;
+                    Console.Error.WriteLine($"FAIL {file}: {summary.Split(Environment.NewLine)[0]}");
+                }
+            }
+            catch (Exception ex)
+            {
+                failures++;
+                Console.Error.WriteLine($"FAIL {file}: {ex.Message}");
+            }
+        }
+
+        Console.WriteLine($"BML corpus: files={files.Count:N0}, bytes={totalBytes:N0}, failures={failures:N0}");
+        return failures == 0 ? 0 : 1;
     }
 }
 

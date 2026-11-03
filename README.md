@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.6` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.7` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -42,6 +42,7 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Preview the top mip of common 2D DDS textures, including BC1/DXT1, BC2/DXT3, BC3/DXT5, BC4/ATI1, BC5/ATI2, common DX10 RGBA/BGRA formats, and legacy RGB/luminance masks.
 - DDS previews are bounded to 128 MiB input and 128 MiB decoded pixels. Cubemaps, volume textures, texture arrays, BC6H, BC7, and other unsupported formats remain available through raw export/HEX preview.
 - DDS format behavior was cross-checked against the public [spnda/dds_image](https://github.com/spnda/dds_image) and [paroj/nv_dds](https://github.com/paroj/nv_dds) references; the application uses its own decoder and does not bundle their code.
+- Parse KartRider `.bml` UI resources as a bounded binary XML-like tree and show an escaped, generated XML preview; the source resource is binary, not literal XML text.
 - Provide text and HEX fallback views for text and unknown binary resources.
 - Attempt to parse KSV recording title, track, event type, recorder, player, and recording data sections.
 - Classify KSV recordings separately from audio, and classify `.1s` resources as model/scene resources.
@@ -117,7 +118,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
-2. Download `RhoViewerPortable_v0.3.6_win-x64.zip` from the [v0.3.6 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.6) and extract it.
+2. Download `RhoViewerPortable_v0.3.7_win-x64.zip` from the [v0.3.7 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.7) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
@@ -193,6 +194,12 @@ dotnet run --project RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj --co
 
 Real game data is not bundled with the repository or CI artifacts. CI runs the deterministic synthetic tests; the real-data corpus command is intended for a local machine that has the relevant installations.
 
+To check only BML entries already extracted from a client archive, pass one or more `.bml` files or directories:
+
+```powershell
+dotnet run --project RhoViewerPortable.Tests/RhoViewerPortable.Tests.csproj --configuration Release -- --bml-corpus "D:\Game\KartRider\BmlSamples"
+```
+
 ## Configuration and logs
 
 Configuration file:
@@ -257,7 +264,7 @@ RhoViewerPortable.exe --smoke-load sound_bgm_desert.rho
 - `--self-test`: opens specified `.rho`, `.rho5`, or `.lpk` archives and checks representative decoded image/audio resources; for LPK it reads every entry and checks the stored size and MD5.
 - `--smoke-load`: creates the WinForms main window, loads the specified archive, and closes automatically to detect startup or loading crashes.
 
-For independent malformed-input, updater-security, CRC, UI-state, language-persistence, DDS-decoder, and complete archive-corpus tests, use the separate `RhoViewerPortable.Tests` project documented above. This keeps test-only switches out of the released application. Run `RhoViewerPortable.Tests.dll --archive-corpus --sha256 <dataRoot> [otherDataRoot ...]` to print a deterministic aggregate SHA-256 fingerprint over normalized relative archive paths, entry paths, and decoded entry bytes. The fingerprint is useful for repeatability/regression comparison; it is not an authenticity check unless compared with a trusted baseline.
+For independent malformed-input (including BML), updater-security, CRC, UI-state, language-persistence, DDS-decoder, and complete archive-corpus tests, use the separate `RhoViewerPortable.Tests` project documented above. This keeps test-only switches out of the released application. Run `RhoViewerPortable.Tests.dll --archive-corpus --sha256 <dataRoot> [otherDataRoot ...]` to print a deterministic aggregate SHA-256 fingerprint over normalized relative archive paths, entry paths, and decoded entry bytes. The fingerprint is useful for repeatability/regression comparison; it is not an authenticity check unless compared with a trusted baseline.
 
 ## Architecture overview
 
@@ -292,6 +299,8 @@ The RhoKey table is stored locally at `third_party/Kartrider-File-Reader/src/Kar
 
 The `.1s` analyzer reports candidate occurrences of public file/model/vertex markers and a declared module count where the file header permits it. Marker definitions are referenced from the MIT-licensed `VT-Tuzki/kartrider_model_1s_to_obj` project; no parser or exporter code is copied. [`nixliuxin/KartRider-Tools`](https://github.com/nixliuxin/KartRider-Tools) is also acknowledged as a high-level reference for the broader `.1s` analysis and conversion scope, not as a code dependency. Rho Viewer does not copy its source, binaries, or implementation; it still does not decode meshes, materials, animations, or reliably determine whether a model is a track, character, or kart. See `THIRD_PARTY_NOTICES.txt` and `third_party/Kartrider-File-Reader/UPSTREAM.md` for dependency provenance and license details.
 
+KartRider `.bml` resources are not ordinary XML documents. The current preview decodes the length-prefixed UTF-16LE node/text/attribute/child layout described by [`BinaryXmlTag.cs`](https://github.com/xpoi5010/Kartrider-File-Reader/blob/main/src/KartriderLibrary/Xml/BinaryXmlTag.cs) and [`BinaryReaderExt.cs`](https://github.com/xpoi5010/Kartrider-File-Reader/blob/main/src/KartriderLibrary/IO/BinaryReaderExt.cs), then renders an escaped XML-like view. This is an independent parser with byte, depth, node, attribute, and preview limits. It has been verified against seven `.bml` resources from the archived Taiwan client; other client/version variants may differ.
+
 ## Security and data boundaries
 
 - Source Rho, Rho5, and LPK archives are opened for reading; the tool does not write back to or repack the source archive.
@@ -322,7 +331,7 @@ This source package is released under GPL-3.0. The complete license text is in [
 Acknowledgements:
 
 1. 黑黑de臉蛋's 臉蛋看看 (RhoDump): for the historical program context and research sample source.
-2. [`xpoi5010/Kartrider-File-Reader`](https://github.com/xpoi5010/Kartrider-File-Reader): for public Rho/Rho5 format research and C# decoding reference code. Its GPL-3.0 license text is retained in `third_party/Kartrider-File-Reader/LICENSE`.
+2. [`xpoi5010/Kartrider-File-Reader`](https://github.com/xpoi5010/Kartrider-File-Reader): for public Rho/Rho5 format research, the [`Xml` BML implementation](https://github.com/xpoi5010/Kartrider-File-Reader/tree/main/src/KartriderLibrary/Xml), and [`Record` KSV structures](https://github.com/xpoi5010/Kartrider-File-Reader/tree/main/src/KartriderLibrary/Record). The application uses the vendored KartLibrary KSV reader and an independent bounded BML parser. Its GPL-3.0 license text is retained in `third_party/Kartrider-File-Reader/LICENSE`.
 3. [`brownsugar/kart-patcher`](https://github.com/brownsugar/kart-patcher): for public KartRider patcher workflow, `KartRider.pin`/patch socket research, NFO200 manifest handling, and update safety reference. The project is published under MIT; this application does not redistribute its Electron application or copyrighted game files.
 4. 百度韓服跑跑卡丁車貼吧 澜轶: for the Microsoft LpkToolkit v1.x adaptation framework supporting Nexon LPK v4.
 5. 不到壹个字 (budaoyigezi): for the LPK tool implementation reference.

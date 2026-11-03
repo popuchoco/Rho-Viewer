@@ -1241,9 +1241,13 @@ internal sealed class MainForm : Form
     {
         var specialized = ResourceAnalyzers.Analyze(item, bytes);
         if (!string.IsNullOrEmpty(specialized))
+        {
+            if (item.Extension == ".bml" && !specialized.StartsWith("BML 二進位 XML-like 結構解析成功", StringComparison.Ordinal))
+                return specialized + Environment.NewLine + Environment.NewLine + BuildHexPreview(bytes);
             return specialized;
+        }
 
-        if (item.Extension is ".bml" or ".xml" or ".json" or ".txt" or ".ini" or ".lua")
+        if (item.Extension is ".xml" or ".json" or ".txt" or ".ini" or ".lua")
         {
             var text = DecodeText(bytes);
             if (text.Length > 12000)
@@ -1251,6 +1255,11 @@ internal sealed class MainForm : Form
             return text;
         }
 
+        return BuildHexPreview(bytes);
+    }
+
+    private static string BuildHexPreview(byte[] bytes)
+    {
         var length = Math.Min(bytes.Length, 512);
         var builder = new StringBuilder($"HEX 預覽（前 {length:N0} bytes）：");
         for (var offset = 0; offset < length; offset += 16)

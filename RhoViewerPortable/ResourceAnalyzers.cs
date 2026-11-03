@@ -20,7 +20,7 @@ internal static class ResourceAnalyzers
     internal static string AnalyzeExtension(string extension, byte[] data)
     {
         var normalizedExtension = extension.ToLowerInvariant();
-        if ((normalizedExtension is ".ksv" or ".ogg" or ".flac" or ".1s") && data.Length > MaxAnalysisBytes)
+        if ((normalizedExtension is ".ksv" or ".ogg" or ".flac" or ".1s" or ".bml") && data.Length > MaxAnalysisBytes)
             return $"資源過大，略過內容分析（上限 {MaxAnalysisBytes / (1024 * 1024)} MiB；目前 {data.Length / (1024 * 1024)} MiB）。可匯出原始資源後使用外部工具。";
 
         return normalizedExtension switch
@@ -29,6 +29,7 @@ internal static class ResourceAnalyzers
             ".ogg" => AnalyzeOgg(data),
             ".flac" => AnalyzeFlac(data),
             ".1s" => OneSAnalyzer.Analyze(data),
+            ".bml" => BmlAnalyzer.Analyze(data),
             _ => ""
         };
     }

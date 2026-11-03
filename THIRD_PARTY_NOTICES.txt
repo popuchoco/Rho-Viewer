@@ -13,15 +13,23 @@ Upstream revision anchor: 37fab6415360afa83e8034f8cedb2cc6766d2fe0 (2024-02-21)
 Revision evidence and limits: see third_party/Kartrider-File-Reader/UPSTREAM.md.
 
 Rho Viewer Portable uses the local KartLibrary source as the Rho archive
-decoding backend. In particular, the local file
+decoding backend. The KSV summary calls its KartRecord/KSVInfo reader. In
+particular, the local file
 third_party/Kartrider-File-Reader/src/KartriderLibrary/Encrypt/RhoKey.cs
 contains the RhoKey vector table used by the decoder. The released program
 does not fetch this file from GitHub at runtime.
 
-The KSV summary view calls the upstream KartRecord/KSVInfo structures. The
-OGG and FLAC metadata summaries in this application are local, lightweight
-container readers layered on top of decoded resource bytes; they do not copy
-an external audio decoder.
+The `.bml` preview is an independent, bounded parser based on the public
+`src/KartriderLibrary/Xml/BinaryXmlTag.cs` and
+`src/KartriderLibrary/IO/BinaryReaderExt.cs` field layout (UTF-16LE
+length-prefixed strings, attributes, and recursive child tags). It does not
+call the upstream unbounded recursive BML reader or copy its implementation.
+The preview is generated XML-like output; the original `.bml` payload remains
+binary.
+
+The OGG and FLAC metadata summaries in this application are local,
+lightweight container readers layered on top of decoded resource bytes; they
+do not copy an external audio decoder.
 
 The vendored reader has downstream changes for legacy Rho block-checksum
 validation and Rho5 ordered duplicate-entry handling, exact decompression
