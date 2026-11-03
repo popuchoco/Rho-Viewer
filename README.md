@@ -8,7 +8,7 @@ Rho Viewer Portable is not affiliated with, endorsed by, sponsored by, or operat
 
 ## Current version
 
-`0.3.7` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
+`0.3.8` — framework-dependent `win-x64` portable release targeting .NET 10. The release ZIP is published on the [GitHub Releases page](https://github.com/popuchoco/Rho-Viewer/releases).
 
 The Portable ZIP intentionally does not include the .NET Runtime. Install Microsoft .NET 10 Desktop Runtime 10.0.14 or a later .NET 10 servicing release for Windows x64 before running the application. This keeps the release package small and leaves runtime installation and updates to the user and Microsoft's official installer.
 
@@ -39,6 +39,7 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 ### Resource preview and analysis
 
 - Preview PNG, JPG/JPEG, BMP, and GIF images.
+- Debounce rapid selection changes, cancel obsolete queued previews, and serialize preview work to avoid repeatedly decoding entries during fast navigation. A recent-resource LRU cache retains at most 64 MiB across 128 entries; resources larger than the cache budget bypass it.
 - Preview the top mip of common 2D DDS textures, including BC1/DXT1, BC2/DXT3, BC3/DXT5, BC4/ATI1, BC5/ATI2, common DX10 RGBA/BGRA formats, and legacy RGB/luminance masks.
 - DDS previews are bounded to 128 MiB input and 128 MiB decoded pixels. Cubemaps, volume textures, texture arrays, BC6H, BC7, and other unsupported formats remain available through raw export/HEX preview.
 - DDS format behavior was cross-checked against the public [spnda/dds_image](https://github.com/spnda/dds_image) and [paroj/nv_dds](https://github.com/paroj/nv_dds) references; the application uses its own decoder and does not bundle their code.
@@ -118,7 +119,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 ### Use the release package
 
 1. Install Microsoft [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) 10.0.14 or later for Windows x64.
-2. Download `RhoViewerPortable_v0.3.7_win-x64.zip` from the [v0.3.7 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.7) and extract it.
+2. Download `RhoViewerPortable_v0.3.8_win-x64.zip` from the [v0.3.8 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.3.8) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
 5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.

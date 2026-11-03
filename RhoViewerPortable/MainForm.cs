@@ -7,6 +7,10 @@ namespace RhoViewerPortable;
 
 internal sealed class MainForm : Form
 {
+    private const int PreviewDebounceMilliseconds = 160;
+    private const long PreviewCacheCapacityBytes = 64L * 1024 * 1024;
+    private const int PreviewCacheMaximumEntries = 128;
+
     private readonly List<RhoArchiveContext> _contexts = new();
     private readonly List<RhoItem> _allItems = new();
     private readonly ListBox _archiveList = new();
@@ -35,7 +39,10 @@ internal sealed class MainForm : Form
     private readonly ToolStripButton _settingsButton = new();
     private readonly ToolStrip _toolStrip = new();
     private readonly HashSet<string> _playbackTempDirectories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _previewWorkGate = new(1, 1);
+    private readonly BoundedByteCache<RhoItem> _previewByteCache = new(PreviewCacheCapacityBytes, PreviewCacheMaximumEntries);
     private CancellationTokenSource? _exportCts;
+    private CancellationTokenSource? _previewCts;
     private Process? _playbackProcess;
     private string? _activePlaybackTempDirectory;
     private string _selectedFolderPath = string.Empty;
@@ -43,6 +50,10 @@ internal sealed class MainForm : Form
     private Bitmap? _currentBitmap;
     private int _previewGeneration;
     private bool _busy;
+    private bool _archiveClearInProgress;
+    private bool _closeDrainStarted;
+    private bool _allowClose;
+    private TaskCompletionSource<bool>? _archiveClearCompletion;
     private readonly UiMutationTracker _uiMutations = new();
     private bool _layoutInitialized;
     private AppSettings _settings = AppSettings.CreateDefault();
@@ -446,14 +457,13 @@ internal sealed class MainForm : Form
 
     private void WireEvents()
     {
-        _archiveList.SelectedIndexChanged += async (_, _) =>
+        _archiveList.SelectedIndexChanged += (_, _) =>
         {
             _selectedFolderPath = string.Empty;
             _treeContextFilter = null;
             RefreshResourceTree();
             UpdateBreadcrumb();
             ApplyFilter();
-            await PreviewSelectedAsync();
         };
         _resourceTree.AfterSelect += (_, e) =>
         {
@@ -471,12 +481,12 @@ internal sealed class MainForm : Form
         _searchBox.TextChanged += (_, _) => ApplyFilter();
         _resourceKindFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
         _extensionFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
-        _fileGrid.SelectionChanged += async (_, _) =>
+        _fileGrid.SelectionChanged += (_, _) =>
         {
             UpdateButtons();
             if (_uiMutations.IsActive(UiMutationKind.SelectionBatch))
                 return;
-            await PreviewSelectedAsync();
+            SchedulePreviewSelected();
         };
         _mainSplit.SplitterMoved += (_, _) => CaptureSplitterRatio();
         Resize += (_, _) => ApplyResponsiveLayout();
@@ -484,13 +494,7 @@ internal sealed class MainForm : Form
         KeyDown += MainForm_KeyDown;
         DragEnter += MainForm_DragEnter;
         DragDrop += MainForm_DragDrop;
-        FormClosing += (_, _) =>
-        {
-            SaveWindowLayout();
-            StopAudio();
-            DisposeArchives();
-            CleanupPlaybackFiles();
-        };
+        FormClosing += MainForm_FormClosing;
     }
 
     private void ApplyResponsiveLayout()
@@ -645,7 +649,7 @@ internal sealed class MainForm : Form
                 row.Selected = !row.Selected;
         }
         UpdateButtons();
-        _ = PreviewSelectedAsync();
+        SchedulePreviewSelected();
     }
 
     private async Task ChooseFolderAsync()
@@ -877,6 +881,7 @@ internal sealed class MainForm : Form
         finally
         {
             SetBusy(false, $"已載入 {_contexts.Count} 個封包、{_allItems.Count:N0} 個資源");
+            SchedulePreviewSelected();
         }
     }
 
@@ -1075,11 +1080,14 @@ internal sealed class MainForm : Form
                     (extension == AllExtensionsLabel || string.Equals(item.Extension, extension, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
 
-            _fileGrid.Rows.Clear();
-            foreach (var item in filtered)
+            using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
             {
-                var rowIndex = _fileGrid.Rows.Add(item.Owner.DisplayName, item.RelativePath, $"{ResourceClassifier.GetDisplayName(item.Kind)} ({item.Extension})", FormatSize(item.Size), item.Property);
-                _fileGrid.Rows[rowIndex].Tag = item;
+                _fileGrid.Rows.Clear();
+                foreach (var item in filtered)
+                {
+                    var rowIndex = _fileGrid.Rows.Add(item.Owner.DisplayName, item.RelativePath, $"{ResourceClassifier.GetDisplayName(item.Kind)} ({item.Extension})", FormatSize(item.Size), item.Property);
+                    _fileGrid.Rows[rowIndex].Tag = item;
+                }
             }
 
             _summaryLabel.Text = $"顯示 {filtered.Count:N0} / {_allItems.Count:N0} 個資源";
@@ -1087,14 +1095,53 @@ internal sealed class MainForm : Form
             if (!string.IsNullOrWhiteSpace(query) || selectedKind is not null || extension != AllExtensionsLabel || !string.IsNullOrEmpty(_selectedFolderPath))
                 AppLogger.Info("Filter", $"query={query}; kind={selectedKind}; extension={extension}; folder={_selectedFolderPath}; shown={filtered.Count}");
             UpdateButtons();
+            SchedulePreviewSelected();
         }
     }
 
-    private async Task PreviewSelectedAsync()
+    private void SchedulePreviewSelected()
     {
-        var item = _fileGrid.SelectedRows.Count > 0 ? _fileGrid.SelectedRows[0].Tag as RhoItem : null;
-        var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context ?? _treeContextFilter;
+        if (_archiveClearInProgress || _closeDrainStarted || IsDisposed)
+            return;
+
         var generation = ++_previewGeneration;
+        var cancellationSource = new CancellationTokenSource();
+        var previous = _previewCts;
+        _previewCts = cancellationSource;
+        previous?.Cancel();
+        _ = RunScheduledPreviewAsync(generation, cancellationSource);
+    }
+
+    private async Task RunScheduledPreviewAsync(int generation, CancellationTokenSource cancellationSource)
+    {
+        try
+        {
+            await Task.Delay(PreviewDebounceMilliseconds, cancellationSource.Token);
+            await PreviewSelectedAsync(generation, cancellationSource.Token);
+        }
+        catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Preview", "scheduled preview failed", ex);
+        }
+        finally
+        {
+            if (ReferenceEquals(_previewCts, cancellationSource))
+                _previewCts = null;
+            cancellationSource.Dispose();
+        }
+    }
+
+    private async Task PreviewSelectedAsync(int generation, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var selectedRow = _fileGrid.CurrentRow is { Selected: true } currentRow
+            ? currentRow
+            : (_fileGrid.SelectedRows.Count > 0 ? _fileGrid.SelectedRows[0] : null);
+        var item = selectedRow?.Tag as RhoItem;
+        var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context ?? _treeContextFilter;
         DisposePreviewBitmap();
         _previewImage.Visible = false;
         _previewText.Visible = true;
@@ -1120,46 +1167,77 @@ internal sealed class MainForm : Form
 
         _previewTitle.Text = $"{item.Owner.DisplayName} / {item.RelativePath}";
         _previewText.Text = "正在解碼資源…";
+        var gateEntered = false;
         try
         {
-            var bytes = await Task.Run(item.ReadBytes);
-            if (generation != _previewGeneration || IsDisposed)
+            await _previewWorkGate.WaitAsync(cancellationToken);
+            gateEntered = true;
+
+            if (!_previewByteCache.TryGetValue(item, out var bytes))
+            {
+                bytes = await Task.Run(item.ReadBytes, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                _previewByteCache.Add(item, bytes);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            using var content = await Task.Run(() => CreatePreviewContent(item, bytes), cancellationToken);
+            if (generation != _previewGeneration || IsDisposed || cancellationToken.IsCancellationRequested)
                 return;
 
-            var info = BuildItemInfo(item, bytes.Length);
-            if (item.Extension == ".dds")
+            if (content.Bitmap is not null)
             {
-                using var decoded = await Task.Run(() => DdsImageDecoder.Decode(bytes));
-                if (generation != _previewGeneration || IsDisposed)
-                    return;
-
-                var bitmap = decoded.TakeBitmap();
-                _currentBitmap = bitmap;
-                _previewImage.Image = bitmap;
-                _previewImage.Visible = true;
-                _previewText.Visible = false;
-                _previewTitle.Text = $"{item.Name}  ·  DDS {bitmap.Width} × {bitmap.Height}  ·  {decoded.Format}  ·  {FormatSize(bytes.Length)}";
-            }
-            else if (item.Extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif")
-            {
-                using var stream = new MemoryStream(bytes, writable: false);
-                using var source = Image.FromStream(stream);
-                _currentBitmap = new Bitmap(source);
+                _currentBitmap = content.TakeBitmap();
                 _previewImage.Image = _currentBitmap;
                 _previewImage.Visible = true;
                 _previewText.Visible = false;
-                _previewTitle.Text = $"{item.Name}  ·  {source.Width} × {source.Height}  ·  {FormatSize(bytes.Length)}";
+                _previewTitle.Text = content.Title;
             }
             else
             {
-                _previewText.Text = info + Environment.NewLine + Environment.NewLine + BuildPayloadPreview(item, bytes);
+                _previewText.Text = content.Text;
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
-            if (generation == _previewGeneration)
+            if (generation == _previewGeneration && !IsDisposed)
                 _previewText.Text = BuildItemInfo(item, item.Size) + Environment.NewLine + Environment.NewLine + "解碼失敗：" + ex.Message;
         }
+        finally
+        {
+            if (gateEntered)
+                _previewWorkGate.Release();
+        }
+    }
+
+    private static PreviewContent CreatePreviewContent(RhoItem item, byte[] bytes)
+    {
+        if (item.Extension == ".dds")
+        {
+            using var decoded = DdsImageDecoder.Decode(bytes);
+            var bitmap = decoded.TakeBitmap();
+            return new PreviewContent(
+                $"{item.Name}  ·  DDS {bitmap.Width} × {bitmap.Height}  ·  {decoded.Format}  ·  {FormatSize(bytes.Length)}",
+                string.Empty,
+                bitmap);
+        }
+
+        if (item.Extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif")
+        {
+            using var stream = new MemoryStream(bytes, writable: false);
+            using var source = Image.FromStream(stream);
+            var bitmap = new Bitmap(source);
+            return new PreviewContent(
+                $"{item.Name}  ·  {source.Width} × {source.Height}  ·  {FormatSize(bytes.Length)}",
+                string.Empty,
+                bitmap);
+        }
+
+        var info = BuildItemInfo(item, bytes.Length);
+        return new PreviewContent(string.Empty, info + Environment.NewLine + Environment.NewLine + BuildPayloadPreview(item, bytes), null);
     }
 
     private static string BuildArchiveListText(RhoArchiveContext context)
@@ -1641,10 +1719,65 @@ internal sealed class MainForm : Form
         return string.IsNullOrWhiteSpace(builder.ToString()) ? "unnamed" : builder.ToString();
     }
 
-    private void ClearArchives()
+    private async void ClearArchives()
     {
-        if (_busy)
+        if (_busy || _archiveClearInProgress || _closeDrainStarted)
             return;
+
+        _archiveClearInProgress = true;
+        var clearCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _archiveClearCompletion = clearCompletion;
+        _statusLabel.Text = "正在停止預覽並清除封包…";
+        _previewCts?.Cancel();
+        await _previewWorkGate.WaitAsync();
+        try
+        {
+            _previewByteCache.Clear();
+            ClearArchivesCore();
+        }
+        finally
+        {
+            _previewWorkGate.Release();
+            _archiveClearInProgress = false;
+            if (ReferenceEquals(_archiveClearCompletion, clearCompletion))
+                _archiveClearCompletion = null;
+            clearCompletion.TrySetResult(true);
+        }
+    }
+
+    private async void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (_allowClose)
+            return;
+
+        e.Cancel = true;
+        if (_closeDrainStarted)
+            return;
+
+        _closeDrainStarted = true;
+        SaveWindowLayout();
+        _previewCts?.Cancel();
+        if (_archiveClearCompletion is { } clearCompletion)
+            await clearCompletion.Task;
+        await _previewWorkGate.WaitAsync();
+        try
+        {
+            _previewByteCache.Clear();
+            StopAudio();
+            DisposeArchives();
+            CleanupPlaybackFiles();
+        }
+        finally
+        {
+            _previewWorkGate.Release();
+        }
+
+        _allowClose = true;
+        BeginInvoke(new Action(Close));
+    }
+
+    private void ClearArchivesCore()
+    {
         AppLogger.Info("Clear", $"archives={_contexts.Count}; resources={_allItems.Count}");
         StopAudio();
         DisposeArchives();
@@ -1758,6 +1891,28 @@ internal sealed class MainForm : Form
     private sealed record ArchiveListEntry(RhoArchiveContext? Context, string DisplayText)
     {
         public override string ToString() => DisplayText;
+    }
+
+    private sealed class PreviewContent(string title, string text, Bitmap? bitmap) : IDisposable
+    {
+        private Bitmap? _bitmap = bitmap;
+
+        public string Title { get; } = title;
+        public string Text { get; } = text;
+        public Bitmap? Bitmap => _bitmap;
+
+        public Bitmap TakeBitmap()
+        {
+            var result = _bitmap ?? throw new InvalidOperationException("Preview content does not contain a bitmap.");
+            _bitmap = null;
+            return result;
+        }
+
+        public void Dispose()
+        {
+            _bitmap?.Dispose();
+            _bitmap = null;
+        }
     }
 
     private sealed record ResourceKindFilterOption(ResourceKind? Kind, string Label)

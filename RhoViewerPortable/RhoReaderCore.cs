@@ -8,6 +8,7 @@ namespace RhoViewerPortable;
 internal sealed class RhoArchiveContext : IDisposable
 {
     private readonly IDisposable _archive;
+    private readonly object _resourceReadSync = new();
 
     private RhoArchiveContext(
         string path,
@@ -224,7 +225,17 @@ internal sealed class RhoArchiveContext : IDisposable
     private static int CountChildFolders(Rho5Folder folder)
         => folder.Folders.Sum(child => 1 + CountChildFolders(child));
 
-    public void Dispose() => _archive.Dispose();
+    internal byte[] ReadResource(Func<byte[]> readBytes)
+    {
+        lock (_resourceReadSync)
+            return readBytes();
+    }
+
+    public void Dispose()
+    {
+        lock (_resourceReadSync)
+            _archive.Dispose();
+    }
 }
 
 internal sealed class RhoItem
@@ -257,7 +268,7 @@ internal sealed class RhoItem
         if (Size > MaxMaterializedBytes)
             throw new InvalidDataException($"資源 {RelativePath} 大小為 {Size:N0} bytes，超過單次載入上限 {MaxMaterializedBytes:N0} bytes。請使用專用串流工具處理此大型資源。");
 
-        var bytes = _readBytes();
+        var bytes = Owner.ReadResource(_readBytes);
         if (bytes.Length > MaxMaterializedBytes)
             throw new InvalidDataException($"資源 {RelativePath} 解碼後超過單次載入上限 {MaxMaterializedBytes:N0} bytes。");
 

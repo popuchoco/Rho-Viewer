@@ -27,6 +27,7 @@ internal static class Program
         failures += RunSuite("BML binary XML-like parser tests", BmlAnalyzerTests.Run);
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
+        failures += RunSuite("bounded preview byte-cache tests", PreviewByteCacheTests.Run);
         failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
         failures += RunSuite("DDS decoding and malformed-input tests", DdsDecoderTests.Run);
         Console.WriteLine(failures == 0 ? "ALL TEST SUITES PASSED" : $"TEST FAILURES: {failures}");
@@ -994,6 +995,87 @@ internal static class GeneralTests
         }
         if (state.IsActive(UiMutationKind.ResourceTreeRebuild))
             throw new InvalidDataException("UI mutation state was not restored after exception unwind.");
+    }
+}
+
+internal static class PreviewByteCacheTests
+{
+    public static void Run()
+    {
+        TestByteCapacityAndLeastRecentlyUsedEviction();
+        TestEntryLimitAndOversizedValues();
+        TestReplacementAndClear();
+    }
+
+    private static void TestByteCapacityAndLeastRecentlyUsedEviction()
+    {
+        var cache = new BoundedByteCache<object>(capacityBytes: 10, maximumEntries: 8);
+        var first = new object();
+        var second = new object();
+        var third = new object();
+        cache.Add(first, new byte[4]);
+        cache.Add(second, new byte[4]);
+
+        Assert(cache.TryGetValue(first, out var firstValue) && firstValue.Length == 4,
+            "cache should return a previously added byte array");
+        cache.Add(third, new byte[5]);
+
+        Assert(cache.TryGetValue(first, out _), "a recent cache hit should protect the entry from eviction");
+        Assert(!cache.TryGetValue(second, out _), "the least-recently-used entry should be evicted first");
+        Assert(cache.TryGetValue(third, out _), "the newly added entry should remain cached");
+        Assert(cache.CachedBytes == 9, "cache byte accounting should match retained arrays");
+
+        static void Assert(bool condition, string message)
+        {
+            if (!condition)
+                throw new InvalidDataException(message);
+        }
+    }
+
+    private static void TestEntryLimitAndOversizedValues()
+    {
+        var cache = new BoundedByteCache<object>(capacityBytes: 100, maximumEntries: 2);
+        var first = new object();
+        var second = new object();
+        var third = new object();
+        cache.Add(first, new byte[] { 1 });
+        cache.Add(second, new byte[] { 2 });
+        cache.Add(third, new byte[] { 3 });
+
+        Assert(cache.Count == 2, "cache should enforce its entry-count limit");
+        Assert(!cache.TryGetValue(first, out _), "entry-count pressure should evict the oldest entry");
+        Assert(cache.TryGetValue(second, out _) && cache.TryGetValue(third, out _),
+            "the two most recent entries should remain cached");
+
+        var oversized = new object();
+        cache.Add(oversized, new byte[101]);
+        Assert(!cache.TryGetValue(oversized, out _), "an item larger than the byte budget should not be cached");
+        Assert(cache.Count == 2 && cache.CachedBytes == 2, "oversized values should not alter cache accounting");
+
+        static void Assert(bool condition, string message)
+        {
+            if (!condition)
+                throw new InvalidDataException(message);
+        }
+    }
+
+    private static void TestReplacementAndClear()
+    {
+        var cache = new BoundedByteCache<string>(capacityBytes: 16, maximumEntries: 4);
+        cache.Add("key", new byte[3]);
+        cache.Add("key", new byte[5]);
+        Assert(cache.Count == 1 && cache.CachedBytes == 5, "replacing a key should update count and byte accounting");
+        Assert(cache.TryGetValue("key", out var value) && value.Length == 5, "replacement value should be returned");
+
+        cache.Clear();
+        Assert(cache.Count == 0 && cache.CachedBytes == 0 && !cache.TryGetValue("key", out _),
+            "clear should release all cached entries and bytes");
+
+        static void Assert(bool condition, string message)
+        {
+            if (!condition)
+                throw new InvalidDataException(message);
+        }
     }
 }
 
