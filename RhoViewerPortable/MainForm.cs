@@ -1530,7 +1530,9 @@ internal sealed class MainForm : Form
                 _activePlaybackTempDirectory = shellHandoff ? null : playbackDirectory;
                 _playbackProcess = process;
                 var cleanupMode = PlaybackTempCleanupPolicy.ForPlayerProcess(process is not null);
-                if (!PlaybackTempCleanupPolicy.CanCleanup(cleanupMode))
+                // A shell association does not expose the real player's lifetime. Keep
+                // its file outside app-exit cleanup; the system temp folder is not permanent storage.
+                if (!PlaybackTempCleanupPolicy.ShouldTrackForApplicationCleanup(cleanupMode))
                     _playbackTempDirectories.Remove(playbackDirectory);
                 if (_playbackProcess is not null)
                 {
@@ -1544,7 +1546,7 @@ internal sealed class MainForm : Form
                 }
                 else
                 {
-                    _statusLabel.Text = $"已交給 Windows 預設播放器：{item.Name}";
+                    _statusLabel.Text = $"已交給 Windows 預設播放器：{item.Name}；暫存檔留在系統暫存資料夾，程式不會自動清理。";
                 }
                 AppLogger.Info("PlayAudio", $"launched={item.Name}; temp={tempFile}; process={(process is null ? "shell" : process.Id.ToString())}");
                 UpdateButtons();
@@ -1567,7 +1569,7 @@ internal sealed class MainForm : Form
             var status = _playbackProcess is not null || _activePlaybackTempDirectory is not null
                 ? "音效已啟動；按「停止音效」可結束並清理暫存檔。"
                 : shellHandoff
-                    ? "音效已交給 Windows 預設播放器；暫存檔保留供播放使用。"
+                    ? "音效已交給 Windows 預設播放器；暫存檔留在系統暫存資料夾，程式不會自動清理。Windows 或使用者仍可能清除該檔案。"
                     : $"已載入 {_contexts.Count} 個封包、{_allItems.Count:N0} 個資源";
             SetBusy(false, status);
         }

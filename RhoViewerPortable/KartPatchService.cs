@@ -191,7 +191,7 @@ internal sealed class KartPatchService
         var internalDirectory = GetSafeChildPath(plan.GameDirectory, InternalDirectoryName);
         EnsureNoReparsePoints(plan.GameDirectory, InternalDirectoryName);
         var stagingDirectory = Path.Combine(internalDirectory, "staging", Guid.NewGuid().ToString("N"));
-        var backupDirectory = Path.Combine(internalDirectory, "backups", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        var backupDirectory = Path.Combine(internalDirectory, "backups", KartPatchPathRules.CreateBackupDirectoryName(DateTime.Now));
         var applied = new List<(string Target, string Backup, bool HadOriginal)>();
         var completedBytes = 0L;
         var completedFiles = 0;
@@ -200,15 +200,15 @@ internal sealed class KartPatchService
         {
             EnsureNoReparsePoints(plan.GameDirectory, Path.GetRelativePath(plan.GameDirectory, stagingDirectory));
             EnsureNoReparsePoints(plan.GameDirectory, Path.GetRelativePath(plan.GameDirectory, backupDirectory));
-            Directory.CreateDirectory(stagingDirectory);
-            Directory.CreateDirectory(backupDirectory);
+            using (WindowsDirectoryPathLease.Acquire(stagingDirectory)) { }
+            using (WindowsDirectoryPathLease.Acquire(backupDirectory)) { }
             foreach (var item in plan.Changes)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var stagedPath = GetSafeChildPath(stagingDirectory, item.File.RelativePath);
                 EnsureNoReparsePoints(stagingDirectory, item.File.RelativePath);
-                Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
                 var partialPath = stagedPath + ".part";
+                using var stagingParentLease = WindowsDirectoryPathLease.Acquire(Path.GetDirectoryName(partialPath)!);
                 progress?.Report(new KartPatchProgress
                 {
                     Stage = "下載與驗證",
@@ -241,7 +241,7 @@ internal sealed class KartPatchService
                     cancellationToken,
                     plan.AllowInsecureHttp).ConfigureAwait(false);
 
-                File.Move(partialPath, stagedPath, overwrite: true);
+                File.Move(partialPath, stagedPath, overwrite: false);
                 completedFiles++;
             }
 
@@ -260,11 +260,12 @@ internal sealed class KartPatchService
                 cancellationToken.ThrowIfCancellationRequested();
                 var stagedPath = GetSafeChildPath(stagingDirectory, item.File.RelativePath);
                 var backupPath = GetSafeChildPath(backupDirectory, item.File.RelativePath);
+                using var targetParentLease = WindowsDirectoryPathLease.Acquire(Path.GetDirectoryName(item.TargetPath)!);
+                using var stagingParentLease = WindowsDirectoryPathLease.Acquire(Path.GetDirectoryName(stagedPath)!);
+                using var backupParentLease = WindowsDirectoryPathLease.Acquire(Path.GetDirectoryName(backupPath)!);
                 EnsureNoReparsePoints(plan.GameDirectory, item.File.RelativePath);
                 EnsureNoReparsePoints(stagingDirectory, item.File.RelativePath);
                 EnsureNoReparsePoints(backupDirectory, item.File.RelativePath);
-                Directory.CreateDirectory(Path.GetDirectoryName(item.TargetPath)!);
-                Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
 
                 var hadOriginal = File.Exists(item.TargetPath);
                 if (hadOriginal)
@@ -332,6 +333,7 @@ internal sealed class KartPatchService
         bool allowInsecureHttp)
     {
         var compressedPath = outputPath + ".gz";
+        var ownsCompressedPath = false;
         try
         {
             if (file.Size < 0 || file.Size > MaxPatchFileBytes || file.SizeGzipped < 0 || file.SizeGzipped > MaxPatchFileBytes)
@@ -343,9 +345,11 @@ internal sealed class KartPatchService
             if (response.Content.Headers.ContentLength is long contentLength && contentLength > file.SizeGzipped)
                 throw new InvalidDataException($"更新檔壓縮大小超出清單宣告：{file.RelativePath}");
 
+            EnsureNoReparsePoints(Path.GetDirectoryName(compressedPath)!, Path.GetFileName(compressedPath));
             await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-            await using (var compressed = new FileStream(compressedPath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
+            await using (var compressed = new FileStream(compressedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
             {
+                ownsCompressedPath = true;
                 var buffer = new byte[64 * 1024];
                 int read;
                 while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
@@ -361,9 +365,10 @@ internal sealed class KartPatchService
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+            EnsureNoReparsePoints(Path.GetDirectoryName(outputPath)!, Path.GetFileName(outputPath));
             await using (var compressed = new FileStream(compressedPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true))
             await using (var gzip = new GZipStream(compressed, CompressionMode.Decompress))
-            await using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
+            await using (var output = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
             {
                 var buffer = new byte[64 * 1024];
                 long expanded = 0;
@@ -380,6 +385,7 @@ internal sealed class KartPatchService
                     throw new InvalidDataException($"更新檔大小與清單不符：{file.RelativePath}");
             }
 
+            EnsureNoReparsePoints(Path.GetDirectoryName(outputPath)!, Path.GetFileName(outputPath));
             var length = new FileInfo(outputPath).Length;
             if (length != file.Size)
                 throw new InvalidDataException($"更新檔大小驗證失敗：{file.RelativePath}");
@@ -391,7 +397,7 @@ internal sealed class KartPatchService
         {
             try
             {
-                if (File.Exists(compressedPath))
+                if (ownsCompressedPath && File.Exists(compressedPath))
                     File.Delete(compressedPath);
             }
             catch (Exception ex)
@@ -513,26 +519,12 @@ internal sealed class KartPatchService
     {
         if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > 2048)
             throw new InvalidDataException("更新清單含有空白或無效路徑。");
-        var normalized = path.Trim().Replace('\\', '/');
+        var normalized = path.Replace('\\', '/');
         var segments = normalized.Split('/');
         if (Path.IsPathRooted(path) || normalized.StartsWith('/') || normalized.Length == 0 ||
-            segments.Any(part => part is "" or "." or ".." || part.Contains(':') || part.EndsWith(' ') || part.EndsWith('.')) ||
-            segments.Any(part => part.Any(ch => Path.GetInvalidFileNameChars().Contains(ch))) ||
-            segments.Any(IsReservedDeviceName))
+            segments.Any(part => !WindowsFileNameRules.IsSafePathSegment(part)))
             throw new InvalidDataException($"更新路徑不可離開遊戲目錄：{path}");
         return normalized;
-    }
-
-    private static bool IsReservedDeviceName(string segment)
-    {
-        var baseName = segment.Split('.')[0];
-        return baseName.Equals("CON", StringComparison.OrdinalIgnoreCase) ||
-               baseName.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
-               baseName.Equals("AUX", StringComparison.OrdinalIgnoreCase) ||
-               baseName.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
-               (baseName.Length == 4 &&
-                (baseName.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || baseName.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
-                baseName[3] is >= '1' and <= '9');
     }
 
     internal static string GetSafeChildPath(string root, string relativePath)

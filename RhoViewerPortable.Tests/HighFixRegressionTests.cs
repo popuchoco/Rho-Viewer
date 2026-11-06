@@ -29,6 +29,9 @@ internal static class HighFixRegressionTests
         TestRho5OffsetsUseLongRanges();
         TestKsvInnerLengthsAreBounded();
         TestUpdaterTrustBoundaries();
+        LowFixPortableTests.Run();
+        TestUpdaterSharesWindowsFilenameValidation();
+        TestWindowsApplyDirectoryLease();
     }
 
     private static void TestArchiveReadsSurviveGarbageCollection()
@@ -364,6 +367,58 @@ internal static class HighFixRegressionTests
 
         Assert(!KartPatchService.IsGloballyRoutableAddress(IPAddress.Parse("192.0.2.10")), "Documentation IPv4 block was accepted as globally routable.");
         Assert(!KartPatchService.IsGloballyRoutableAddress(IPAddress.Parse("2001:db8::1")), "Documentation IPv6 block was accepted as globally routable.");
+    }
+
+    private static void TestUpdaterSharesWindowsFilenameValidation()
+    {
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("CON.txt"), "reserved device filename with extension");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("NUL"), "reserved NUL filename");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("CON .txt"), "reserved device filename with pre-extension space");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("Data/file."), "trailing dot in update path");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("Data/file "), "trailing space in update path");
+        Assert(KartPatchService.NormalizeRelativePath("Data/safe.bin") == "Data/safe.bin",
+            "a normal update path was changed by shared Windows filename validation");
+    }
+
+    private static void TestWindowsApplyDirectoryLease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Console.WriteLine("SKIP Windows-only updater directory lease integration test");
+            return;
+        }
+
+        var root = CreateTemporaryDirectory("L3DirectoryLease");
+        try
+        {
+            var heldDirectory = Path.Combine(root, "target");
+            var movedDirectory = Path.Combine(root, "target-moved");
+            Directory.CreateDirectory(heldDirectory);
+            using (WindowsDirectoryPathLease.Acquire(heldDirectory))
+            {
+                var renameBlocked = false;
+                try
+                {
+                    Directory.Move(heldDirectory, movedDirectory);
+                }
+                catch (IOException)
+                {
+                    renameBlocked = true;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    renameBlocked = true;
+                }
+
+                Assert(renameBlocked, "the Windows directory lease did not block a directory rename while held");
+            }
+
+            Directory.Move(heldDirectory, movedDirectory);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static byte[] ReadSyntheticKsvWithPlayerCount(int playerCount)

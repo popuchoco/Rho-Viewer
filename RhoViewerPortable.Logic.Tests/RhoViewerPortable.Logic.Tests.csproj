@@ -13,6 +13,7 @@
     <Compile Include="../RhoViewerPortable/WindowsFileNameRules.cs" Link="WindowsFileNameRules.cs" />
     <Compile Include="../RhoViewerPortable/KartPatchPathRules.cs" Link="KartPatchPathRules.cs" />
     <Compile Include="../RhoViewerPortable/PlaybackTempCleanupPolicy.cs" Link="PlaybackTempCleanupPolicy.cs" />
+    <Compile Include="../RhoViewerPortable/WindowsDirectoryPathLease.cs" Link="WindowsDirectoryPathLease.cs" />
     <Compile Include="../RhoViewerPortable.Tests/LowFixPortableTests.cs" Link="LowFixPortableTests.cs" />
   </ItemGroup>
 </Project>

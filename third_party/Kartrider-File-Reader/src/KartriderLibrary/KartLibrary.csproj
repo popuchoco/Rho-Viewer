@@ -25,11 +25,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="File\OldImplements\Rho.cs" />
+    <Compile Remove="File\OldImplements\RhoDirectory.cs" />
+    <Compile Remove="File\OldImplements\RhoFileInfo.cs" />
+    <Compile Remove="File\OldImplements\RhoFileStream.cs" />
+    <Compile Remove="File\OldImplements\PackFolderManager.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Game\Engine\Render\Shaders\Relement\vertexShader.glsl" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="Veldrid" Version="4.9.0" PrivateAssets="compile" />
   </ItemGroup>
 

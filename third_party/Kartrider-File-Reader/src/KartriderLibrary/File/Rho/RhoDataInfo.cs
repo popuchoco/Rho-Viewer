@@ -73,40 +73,6 @@ namespace KartLibrary.File
             return output;
         }
 
-        public static byte[] ReadBlock(this BinaryReader reader, Rho RhoFile, uint BlockIndex, uint Key)
-        {
-            RhoDataInfo BlockInfo = RhoFile.GetBlockInfo(BlockIndex);
-            if (BlockInfo is null)
-                return null;
-            reader.BaseStream.Seek(BlockInfo.Offset, SeekOrigin.Begin);
-            byte[] BlockData = reader.ReadBytes(BlockInfo.DataSize);
-            //Debug.Print($"B:{BlockIndex:x8}: {Adler.Adler32(0, BlockData, 0, BlockData.Length):x8}");
-            if ((BlockInfo.BlockProperty & RhoBlockProperty.Compressed) == RhoBlockProperty.Compressed)
-            {
-                using (MemoryStream ms = new MemoryStream(BlockData))
-                {
-                    BlockData = new byte[BlockInfo.UncompressedSize];
-                    using ZLibStream ds = new ZLibStream(ms, CompressionMode.Decompress);
-                    ds.ReadExactly(BlockData);
-                    if (ds.ReadByte() != -1)
-                        throw new InvalidDataException("Rho block expands beyond its declared size.");
-                }
-            }
-            if ((BlockInfo.BlockProperty & RhoBlockProperty.PartialEncrypted) == RhoBlockProperty.PartialEncrypted) // Encrypted or PartialEncrypted
-            {
-                RhoEncrypt.DecryptData(Key, BlockData, 0, BlockData.Length);
-            }
-            if (BlockInfo.BlockProperty == RhoBlockProperty.PartialEncrypted) // PartialEncrypted
-            {
-                RhoDataInfo secPartInfo = RhoFile.GetBlockInfo(BlockIndex + 1);
-                if (secPartInfo is null)
-                    return BlockData;
-                Array.Resize(ref BlockData, BlockInfo.DataSize + secPartInfo.DataSize);
-                reader.BaseStream.Read(BlockData, BlockInfo.DataSize, secPartInfo.DataSize);
-            }
-            //Debug.Print($"A:{BlockIndex:x8}: {Adler.Adler32(0, BlockData, 0, BlockData.Length):x8}");
-            return BlockData;
-        }
     }
 
     public enum RhoBlockProperty
