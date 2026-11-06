@@ -147,6 +147,9 @@ namespace KartLibrary.File
             }
             _rho5Streams.Clear();
             releaseAllHandles();
+            _dataBeginPoses.Clear();
+            _rootFolder.Clear();
+            _closed = true;
         }
 
         private void openSingleFile(int dataPackID, string filePath, CountryCode region)
@@ -154,6 +157,11 @@ namespace KartLibrary.File
             if (!System.IO.File.Exists(filePath))
                 throw new FileNotFoundException($"");
             FileStream rho5Stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!_rho5Streams.TryAdd(dataPackID, rho5Stream))
+            {
+                rho5Stream.Dispose();
+                throw new InvalidOperationException($"Rho5 part {dataPackID} is already open.");
+            }
             string mixingStr = getMixingString(region);
             string fileName = Path.GetFileName(filePath);
             Rho5DecryptStream decryptStream = new Rho5DecryptStream(rho5Stream, fileName, mixingStr);
@@ -238,8 +246,6 @@ namespace KartLibrary.File
             if (!_dataBeginPoses.ContainsKey(dataPackID))
                 _dataBeginPoses.Add(dataPackID, 0);
             _dataBeginPoses[dataPackID] = (int)decryptStream.Position + 0x3FF & 0x7FFFFC00;
-
-            _rho5Streams.Add(dataPackID, rho5Stream);
 
         }
 
@@ -454,9 +460,8 @@ namespace KartLibrary.File
             FileStream rho5Stream = _rho5Streams[handler._dataPackID];
             if (rho5Stream is null || !rho5Stream.CanRead)
                 throw new Exception("");
-            const int maxResourceBytes = 256 * 1024 * 1024;
-            if (handler._compressedSize < 0 || handler._compressedSize > maxResourceBytes ||
-                handler._decompressedSize < 0 || handler._decompressedSize > maxResourceBytes || handler._offset < 0)
+            ArchiveReadLimits.ValidateResourceSizes(handler._compressedSize, handler._decompressedSize, $"Rho5 (part {handler._dataPackID}, block {handler._offset})");
+            if (handler._offset < 0)
                 throw new InvalidDataException($"Rho5 resource size is outside the supported range (part {handler._dataPackID}, block {handler._offset}).");
             using FileStream dataStream = new FileStream(rho5Stream.Name, FileMode.Open, FileAccess.Read, FileShare.Read);
             var offset = checked((long)_dataBeginPoses[handler._dataPackID] + ((long)handler._offset << 10));

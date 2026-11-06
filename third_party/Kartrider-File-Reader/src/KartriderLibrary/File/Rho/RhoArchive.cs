@@ -176,6 +176,9 @@ namespace KartLibrary.File
             uint folderKey = RhoKey.GetDirectoryDataKey(_rhoKey);
 
             Queue<(uint folderDataIndex, RhoFolder folder)> procssQueue = new Queue<(uint folderDataIndex, RhoFolder folder)>();
+            HashSet<uint> visitedFolderDataIndices = new HashSet<uint>();
+            ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, 0xFFFFFFFF);
+            int totalNodeCount = 1; // The root folder.
             procssQueue.Enqueue((0xFFFFFFFF, _rootFolder));
 
             while(procssQueue.Count > 0)
@@ -186,16 +189,26 @@ namespace KartLibrary.File
                 {
                     BinaryReader memReader = new BinaryReader(memStream);
                     int folderCount = memReader.ReadInt32();
+                    ArchiveReadLimits.ValidateFolderChildCount(folderCount, "Rho folder");
+                    totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, folderCount);
+                    List<(uint folderDataIndex, RhoFolder folder)> childFolders = new List<(uint folderDataIndex, RhoFolder folder)>(folderCount);
                     for(int i = 0; i < folderCount; i++)
                     {
                         RhoFolder subFolder = new RhoFolder();
                         string name = memReader.ReadNullTerminatedText(true);
                         uint folderDataIndex = memReader.ReadUInt32();
+                        ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, folderDataIndex);
                         subFolder.Name = name;
-                        procssQueue.Enqueue((folderDataIndex, subFolder));
-                        queObj.folder.AddFolder(subFolder);
+                        childFolders.Add((folderDataIndex, subFolder));
                     }
                     int fileCount = memReader.ReadInt32();
+                    ArchiveReadLimits.ValidateFolderChildCount(fileCount, "Rho file");
+                    totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, fileCount);
+                    foreach (var childFolder in childFolders)
+                    {
+                        procssQueue.Enqueue(childFolder);
+                        queObj.folder.AddFolder(childFolder.folder);
+                    }
                     for(int i = 0; i < fileCount; i++)
                     {
                         RhoFile subFile = new RhoFile();
@@ -399,9 +412,12 @@ namespace KartLibrary.File
 
         public void Dispose()
         {
-            if (!_closed)
-                Close();
+            _rhoStream?.Dispose();
+            _rhoStream = null;
             releaseAllHandlers();
+            _dataInfoMap.Clear();
+            _rootFolder.Clear();
+            _closed = true;
         }
 
         internal Stream? getRhoStream()
@@ -422,10 +438,7 @@ namespace KartLibrary.File
                 throw new Exception("index not exist.");
             RhoDataInfo dataInfo = _dataInfoMap[dataIndex];
 
-            const int maxResourceBytes = 256 * 1024 * 1024;
-            if (dataInfo.DataSize < 0 || dataInfo.DataSize > maxResourceBytes ||
-                dataInfo.UncompressedSize < 0 || dataInfo.UncompressedSize > maxResourceBytes)
-                throw new InvalidDataException($"Rho resource size is outside the supported range (index 0x{dataIndex:X8}).");
+            ArchiveReadLimits.ValidateResourceSizes(dataInfo.DataSize, dataInfo.UncompressedSize, $"Rho (index 0x{dataIndex:X8})");
 
             using FileStream dataStream = new FileStream(_rhoStream.Name, FileMode.Open, FileAccess.Read, FileShare.Read);
             dataStream.Seek(dataInfo.Offset, SeekOrigin.Begin);

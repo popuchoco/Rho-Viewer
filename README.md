@@ -26,7 +26,7 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 - Select `.rho` files directly; opening any `.rho5` part loads its complete same-prefix data-pack set.
 - Open each `.lpk` package independently; LPK decryption keys depend on the original package filename.
 - Read Nexon KartRider LPK v4 resource tables and decrypt/extract entries with flags 6/7 and zero sections; verify decoded resource size and MD5 before use.
-- Validate legacy Rho decoded block checksums and return only each resource's declared byte range; Rho5 verifies exact decompressed length and its per-entry MD5.
+- Validate legacy Rho decoded block checksums and return only each resource's declared byte range; Rho5 verifies exact decompressed length and its per-entry MD5. Legacy Adler-32 values detect corruption and do not authenticate an archive's source.
 - Treat repeated file paths in numbered Rho5 parts as ordered overlays, so a later part replaces an earlier duplicate instead of making the whole set unreadable.
 - Drag a directory or supported archive files into the window.
 - Decrypt legacy Rho5 resources using the vendored KartRider-File-Reader implementation; use the saved TW/KR/CN region setting or detect the region from a nearby `KartRiderTW.ini`, `KartRiderKR.ini`, or `KartRiderCN.ini`.

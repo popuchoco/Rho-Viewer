@@ -13,6 +13,7 @@ namespace RhoViewerPortable;
 internal sealed class LpkArchive : IDisposable
 {
     private const string Salt = "NhucnUGGZIHvxdga";
+    private const long MaxEntrySize = 256L * 1024 * 1024;
     private static readonly byte[] Mask = Convert.FromHexString(
         "7B2F3548439502B9AE91A6E1D8D624B433101D3DC1BBC6F4A5FEB3696B56E475");
 
@@ -109,8 +110,7 @@ internal sealed class LpkArchive : IDisposable
                 throw new InvalidDataException($"LPK v4 資源表校驗失敗：{relativePath}");
             if (flags is not (6 or 7) || sections != 0)
                 throw new NotSupportedException($"LPK v4 暫不支援此資源記錄（flags={flags}, sections={sections}）：{relativePath}");
-            if (size > 256 * 1024 * 1024 || stored > int.MaxValue)
-                throw new InvalidDataException($"LPK v4 資源大小超出支援範圍：{relativePath}");
+            ValidateEntrySizeLimits(size, stored);
 
             entries[index] = new LpkEntry(relativePath, flags, blocks, (int)size, (int)stored, md5);
         }
@@ -185,6 +185,12 @@ internal sealed class LpkArchive : IDisposable
         if (zlib.ReadByte() != -1)
             throw new InvalidDataException($"LPK v4 resource expands beyond its declared size: {resourceName}");
         return output;
+    }
+
+    internal static void ValidateEntrySizeLimits(long size, long stored)
+    {
+        if (size < 0 || size > MaxEntrySize || stored < 0 || stored > MaxEntrySize)
+            throw new InvalidDataException("LPK v4 resource size is outside the supported range.");
     }
 
     public void Dispose()
