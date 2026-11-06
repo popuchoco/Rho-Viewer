@@ -5,16 +5,20 @@ using Microsoft.Win32.SafeHandles;
 namespace RhoViewerPortable;
 
 /// <summary>
-/// Holds directory components open while updater path-based writes and moves run.
-/// On Windows, omitting FILE_SHARE_DELETE for the target blocks ordinary target
-/// rename/reparse replacement; ancestors allow deletion sharing to avoid blocking
-/// unrelated parent and sibling operations. File.Move still resolves names by path,
-/// so this narrows the swap window rather than providing handle-relative atomic I/O;
-/// non-Windows filesystems receive reparse checks but no equivalent lease guarantee.
+/// Holds checked directory components open while updater path-based writes and moves run.
+/// On Windows, the target is opened for directory list access without FILE_SHARE_DELETE,
+/// allowing share-mode compatibility to reject target rename attempts while held.
+/// Attribute-only access does not impose this sharing restriction, and list access
+/// requires directory read/list permission unlike the former metadata-only access.
+/// Ancestors remain attribute-only and allow delete sharing; they are not pinned against
+/// rename. File.Move still resolves names by path, so this narrows the swap window rather
+/// than providing handle-relative atomic I/O; non-Windows filesystems receive reparse
+/// checks but no equivalent lease guarantee.
 /// </summary>
 internal sealed class WindowsDirectoryPathLease : IDisposable
 {
     private const uint FileReadAttributes = 0x0080;
+    private const uint FileListDirectory = 0x0001;
     private const uint OpenExisting = 3;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
     private const uint FileFlagBackupSemantics = 0x02000000;
@@ -75,10 +79,11 @@ internal sealed class WindowsDirectoryPathLease : IDisposable
     {
         var handle = CreateFileW(
             path,
-            FileReadAttributes,
-            // Keep ancestors renameable for unrelated siblings; an ancestor rename can
-            // still redirect path-based I/O, since this is not handle-relative atomicity.
-            // Omit delete sharing only for the target to block its rename while leased.
+            isTarget ? FileListDirectory : FileReadAttributes,
+            // Attribute-only access is unaffected by share-mode compatibility. Request
+            // list access on the target so omitting delete sharing can reject its rename.
+            // Ancestors stay metadata-only and allow delete sharing; path-based I/O can
+            // still be redirected by an ancestor rename.
             ShareRead | ShareWrite | (isTarget ? 0 : ShareDelete),
             IntPtr.Zero,
             OpenExisting,
