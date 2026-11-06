@@ -82,157 +82,178 @@ namespace KartLibrary.File
                 throw new FileNotFoundException($"");
             if (!_closed)
                 throw new Exception("This RhoArchive instance has opened the other rho file. You should close the opened file to do this operation.");
-            _rhoStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (_rhoStream.Length < 0x80)
-                throw new InvalidOperationException();
-
-            _rhoKey = RhoKey.GetRhoKey(Path.GetFileNameWithoutExtension(filePath));
-            
-            BinaryReader reader = new BinaryReader(_rhoStream);
-
-            // Checks identifier
-            _rhoStream.Seek(0x0, SeekOrigin.Begin);
-            byte[] identifierData = reader.ReadBytes(0x40);
-            string converftedStr = Encoding.Unicode.GetString(identifierData, 0, _rhLayerIdentifiers[1].Length << 1);
-            int layerVersion = -1;
-            for (int i = 0; i < _rhLayerIdentifiers.Length; i++)
-                if (converftedStr == _rhLayerIdentifiers[i])
-                {
-                    layerVersion = i;
-                    break;
-                }
-            if (layerVersion < 0)
-                throw new Exception();
-            else
-                _layerVersion = layerVersion;
-
-
-            // Read rho archive info
-            _rhoStream.Seek(0x80, SeekOrigin.Begin);
-            byte[] rhoArchiveInfoData = reader.ReadBytes(0x80);
-            if(_layerVersion == 0)
+            FileStream openedStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            _rhoStream = openedStream;
+            bool openSucceeded = false;
+            try
             {
-                rhoArchiveInfoData = RhoEncrypt.DecryptData(_rhoKey, rhoArchiveInfoData);
-            }
-            else if( _layerVersion == 1) 
-            {
-                rhoArchiveInfoData = RhoEncrypt.DecryptHeaderInfo(rhoArchiveInfoData, _rhoKey);
-            }
+                if (_rhoStream.Length < 0x80)
+                    throw new InvalidOperationException();
 
-            int dataInfoCount = 0;
-            byte[] dataInfoKey10 = new byte[0];
-            uint dataInfoKey11 = 0;
+                _rhoKey = RhoKey.GetRhoKey(Path.GetFileNameWithoutExtension(filePath));
 
-            // Decode rho archive info
-            using (MemoryStream memStream = new MemoryStream(rhoArchiveInfoData))
-            {
-                BinaryReader memReader = new BinaryReader(memStream);   
-                uint infoDataChksum = memReader.ReadUInt32();
-                uint verifyChkSum = Adler.Adler32(0, rhoArchiveInfoData, 4, 0x7C); 
-                if (infoDataChksum != verifyChkSum)
-                    throw new Exception("rho file modified.");
-                int versionChkCode = memReader.ReadInt32();
-                dataInfoCount = memReader.ReadInt32();
-                uint dataInfoWhiteningKey = memReader.ReadUInt32();
-                dataInfoKey11 = dataInfoWhiteningKey ^ _rhoKey;
-                if (_layerVersion == 0)
-                {
-                    dataInfoKey10 = memReader.ReadBytes(0x20);
-                }
-                else if (_layerVersion == 1)
-                {
-                    int u1 = memReader.ReadInt32();
-                    int u2 = memReader.ReadInt32();
-                    _dataChecksum = memReader.ReadUInt32();
-                }
-                uint endMagicCode = memReader.ReadUInt32();
-                int u4 = memReader.ReadInt32();
-                if (endMagicCode != 0xfc1f9778u)
-                    throw new Exception("invalid archiveInfo end magic code.");
-            }
+                BinaryReader reader = new BinaryReader(_rhoStream);
 
-            ArchiveReadLimits.ValidateEntryCount(dataInfoCount, "Rho block");
-            ArchiveReadLimits.ValidateTableFitsFile(0x100, dataInfoCount, 0x20, _rhoStream.Length, "Rho block");
+                // Checks identifier
+                _rhoStream.Seek(0x0, SeekOrigin.Begin);
+                byte[] identifierData = reader.ReadBytes(0x40);
+                string converftedStr = Encoding.Unicode.GetString(identifierData, 0, _rhLayerIdentifiers[1].Length << 1);
+                int layerVersion = -1;
+                for (int i = 0; i < _rhLayerIdentifiers.Length; i++)
+                    if (converftedStr == _rhLayerIdentifiers[i])
+                    {
+                        layerVersion = i;
+                        break;
+                    }
+                if (layerVersion < 0)
+                    throw new Exception();
+                else
+                    _layerVersion = layerVersion;
 
-            // Read data information collection.
-            _dataInfoMap.EnsureCapacity(dataInfoCount);
-            _fileHandlers.EnsureCapacity(dataInfoCount);
-            for (int i = 0; i < dataInfoCount; i++)
-            {
+
+                // Read rho archive info
+                _rhoStream.Seek(0x80, SeekOrigin.Begin);
+                byte[] rhoArchiveInfoData = reader.ReadBytes(0x80);
                 if(_layerVersion == 0)
                 {
-                    RhoDataInfo dataInfo = reader.ReadBlockInfo10(dataInfoKey10);
-                    _dataInfoMap.Add(dataInfo.Index, dataInfo);
+                    rhoArchiveInfoData = RhoEncrypt.DecryptData(_rhoKey, rhoArchiveInfoData);
                 }
-                else if(_layerVersion == 1)
+                else if( _layerVersion == 1)
                 {
-                    RhoDataInfo dataInfo = reader.ReadBlockInfo(dataInfoKey11);
-                    _dataInfoMap.Add(dataInfo.Index, dataInfo);
-                    dataInfoKey11++;
+                    rhoArchiveInfoData = RhoEncrypt.DecryptHeaderInfo(rhoArchiveInfoData, _rhoKey);
                 }
-            }
 
-            // Read all folders and all files info.
-            uint folderKey = RhoKey.GetDirectoryDataKey(_rhoKey);
+                int dataInfoCount = 0;
+                byte[] dataInfoKey10 = new byte[0];
+                uint dataInfoKey11 = 0;
 
-            Queue<(uint folderDataIndex, RhoFolder folder)> procssQueue = new Queue<(uint folderDataIndex, RhoFolder folder)>();
-            HashSet<uint> visitedFolderDataIndices = new HashSet<uint>();
-            ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, 0xFFFFFFFF);
-            int totalNodeCount = 1; // The root folder.
-            procssQueue.Enqueue((0xFFFFFFFF, _rootFolder));
-
-            while(procssQueue.Count > 0)
-            {
-                var queObj = procssQueue.Dequeue();
-                byte[] folderData = getData(queObj.folderDataIndex, folderKey);
-                using(MemoryStream memStream = new MemoryStream(folderData))
+                // Decode rho archive info
+                using (MemoryStream memStream = new MemoryStream(rhoArchiveInfoData))
                 {
                     BinaryReader memReader = new BinaryReader(memStream);
-                    int folderCount = memReader.ReadInt32();
-                    ArchiveReadLimits.ValidateFolderChildCount(folderCount, "Rho folder");
-                    totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, folderCount);
-                    List<(uint folderDataIndex, RhoFolder folder)> childFolders = new List<(uint folderDataIndex, RhoFolder folder)>(folderCount);
-                    for(int i = 0; i < folderCount; i++)
+                    uint infoDataChksum = memReader.ReadUInt32();
+                    uint verifyChkSum = Adler.Adler32(0, rhoArchiveInfoData, 4, 0x7C);
+                    if (infoDataChksum != verifyChkSum)
+                        throw new Exception("rho file modified.");
+                    int versionChkCode = memReader.ReadInt32();
+                    dataInfoCount = memReader.ReadInt32();
+                    uint dataInfoWhiteningKey = memReader.ReadUInt32();
+                    dataInfoKey11 = dataInfoWhiteningKey ^ _rhoKey;
+                    if (_layerVersion == 0)
                     {
-                        RhoFolder subFolder = new RhoFolder();
-                        string name = memReader.ReadNullTerminatedText(true);
-                        uint folderDataIndex = memReader.ReadUInt32();
-                        ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, folderDataIndex);
-                        subFolder.Name = name;
-                        childFolders.Add((folderDataIndex, subFolder));
+                        dataInfoKey10 = memReader.ReadBytes(0x20);
                     }
-                    int fileCount = memReader.ReadInt32();
-                    ArchiveReadLimits.ValidateFolderChildCount(fileCount, "Rho file");
-                    totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, fileCount);
-                    foreach (var childFolder in childFolders)
+                    else if (_layerVersion == 1)
                     {
-                        procssQueue.Enqueue(childFolder);
-                        queObj.folder.AddFolder(childFolder.folder);
+                        int u1 = memReader.ReadInt32();
+                        int u2 = memReader.ReadInt32();
+                        _dataChecksum = memReader.ReadUInt32();
                     }
-                    for(int i = 0; i < fileCount; i++)
+                    uint endMagicCode = memReader.ReadUInt32();
+                    int u4 = memReader.ReadInt32();
+                    if (endMagicCode != 0xfc1f9778u)
+                        throw new Exception("invalid archiveInfo end magic code.");
+                }
+
+                ArchiveReadLimits.ValidateEntryCount(dataInfoCount, "Rho block");
+                ArchiveReadLimits.ValidateTableFitsFile(0x100, dataInfoCount, 0x20, _rhoStream.Length, "Rho block");
+
+                // Read data information collection.
+                _dataInfoMap.EnsureCapacity(dataInfoCount);
+                _fileHandlers.EnsureCapacity(dataInfoCount);
+                for (int i = 0; i < dataInfoCount; i++)
+                {
+                    if(_layerVersion == 0)
                     {
-                        RhoFile subFile = new RhoFile();
-                        string fileName = memReader.ReadNullTerminatedText(true);
-                        uint extInt = memReader.ReadUInt32();
-                        int fileProperty = memReader.ReadInt32();
-                        uint dataIndex = memReader.ReadUInt32();
-                        int fileSize = memReader.ReadInt32();
-                        uint fileKey = RhoKey.GetFileKey(_rhoKey, fileName, extInt);
-                        string fileExtension = Encoding.ASCII.GetString(BitConverter.GetBytes(extInt)).TrimEnd('\0');
+                        RhoDataInfo dataInfo = reader.ReadBlockInfo10(dataInfoKey10);
+                        _dataInfoMap.Add(dataInfo.Index, dataInfo);
+                    }
+                    else if(_layerVersion == 1)
+                    {
+                        RhoDataInfo dataInfo = reader.ReadBlockInfo(dataInfoKey11);
+                        _dataInfoMap.Add(dataInfo.Index, dataInfo);
+                        dataInfoKey11++;
+                    }
+                }
 
-                        RhoFileHandler fileHandler = new RhoFileHandler(this, (RhoFileProperty)fileProperty, dataIndex, fileSize, fileKey);
-                        RhoDataSource bufferedDataSource = new RhoDataSource(fileHandler);
-                        subFile.DataSource = bufferedDataSource;
-                        subFile.Name = $"{fileName}.{fileExtension}";
-                        subFile.FileEncryptionProperty = (RhoFileProperty)fileProperty;
+                // Read all folders and all files info.
+                uint folderKey = RhoKey.GetDirectoryDataKey(_rhoKey);
 
-                        _fileHandlers.Add(dataIndex, fileHandler);
-                        queObj.folder.AddFile(subFile);
+                Queue<(uint folderDataIndex, RhoFolder folder)> procssQueue = new Queue<(uint folderDataIndex, RhoFolder folder)>();
+                HashSet<uint> visitedFolderDataIndices = new HashSet<uint>();
+                ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, 0xFFFFFFFF);
+                int totalNodeCount = 1; // The root folder.
+                procssQueue.Enqueue((0xFFFFFFFF, _rootFolder));
+
+                while(procssQueue.Count > 0)
+                {
+                    var queObj = procssQueue.Dequeue();
+                    byte[] folderData = getData(queObj.folderDataIndex, folderKey);
+                    using(MemoryStream memStream = new MemoryStream(folderData))
+                    {
+                        BinaryReader memReader = new BinaryReader(memStream);
+                        int folderCount = memReader.ReadInt32();
+                        ArchiveReadLimits.ValidateFolderChildCount(folderCount, "Rho folder");
+                        totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, folderCount);
+                        List<(uint folderDataIndex, RhoFolder folder)> childFolders = new List<(uint folderDataIndex, RhoFolder folder)>(folderCount);
+                        for(int i = 0; i < folderCount; i++)
+                        {
+                            RhoFolder subFolder = new RhoFolder();
+                            string name = memReader.ReadNullTerminatedText(true);
+                            uint folderDataIndex = memReader.ReadUInt32();
+                            ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, folderDataIndex);
+                            subFolder.Name = name;
+                            childFolders.Add((folderDataIndex, subFolder));
+                        }
+                        int fileCount = memReader.ReadInt32();
+                        ArchiveReadLimits.ValidateFolderChildCount(fileCount, "Rho file");
+                        totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, fileCount);
+                        foreach (var childFolder in childFolders)
+                        {
+                            procssQueue.Enqueue(childFolder);
+                            queObj.folder.AddFolder(childFolder.folder);
+                        }
+                        for(int i = 0; i < fileCount; i++)
+                        {
+                            RhoFile subFile = new RhoFile();
+                            string fileName = memReader.ReadNullTerminatedText(true);
+                            uint extInt = memReader.ReadUInt32();
+                            int fileProperty = memReader.ReadInt32();
+                            uint dataIndex = memReader.ReadUInt32();
+                            int fileSize = memReader.ReadInt32();
+                            uint fileKey = RhoKey.GetFileKey(_rhoKey, fileName, extInt);
+                            string fileExtension = Encoding.ASCII.GetString(BitConverter.GetBytes(extInt)).TrimEnd('\0');
+
+                            RhoFileHandler fileHandler = new RhoFileHandler(this, (RhoFileProperty)fileProperty, dataIndex, fileSize, fileKey);
+                            RhoDataSource bufferedDataSource = new RhoDataSource(fileHandler);
+                            subFile.DataSource = bufferedDataSource;
+                            subFile.Name = $"{fileName}.{fileExtension}";
+                            subFile.FileEncryptionProperty = (RhoFileProperty)fileProperty;
+
+                            _fileHandlers.Add(dataIndex, fileHandler);
+                            queObj.folder.AddFile(subFile);
+                        }
+                    }
+                }
+
+                _closed = false;
+                openSucceeded = true;
+            }
+            finally
+            {
+                if (!openSucceeded)
+                {
+                    try
+                    {
+                        openedStream.Dispose();
+                    }
+                    finally
+                    {
+                        if (ReferenceEquals(_rhoStream, openedStream))
+                            _rhoStream = null;
                     }
                 }
             }
-            
-            _closed = false;
         }
 
         public void Save()

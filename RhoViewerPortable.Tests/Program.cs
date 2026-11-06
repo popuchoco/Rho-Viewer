@@ -27,7 +27,7 @@ internal static class Program
         failures += RunSuite("resource parser malformed-input tests", ParserInputTests.Run);
         failures += RunSuite("BML binary XML-like parser tests", BmlAnalyzerTests.Run);
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
-        failures += RunSuite("H1-H6 offline high-fix regressions", HighFixRegressionTests.Run);
+        failures += RunSuite("H1-H6 and M1-M3 offline archive regressions", HighFixRegressionTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
         failures += RunSuite("large virtual resource grid tests", VirtualGridTests.Run);
         failures += RunSuite("bounded preview byte-cache tests", PreviewByteCacheTests.Run);

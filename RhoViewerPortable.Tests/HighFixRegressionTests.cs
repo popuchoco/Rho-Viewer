@@ -24,7 +24,9 @@ internal static class HighFixRegressionTests
         TestRhoFolderTraversalIsBounded();
         TestStoredResourceSizesAreBounded();
         TestArchiveDataRangesAreBounded();
-        TestFailedArchiveOpenDisposesStreams();
+        TestFailedArchiveOpenClosesStreams();
+        TestRho5PackNameRegexEscapesMetacharacters();
+        TestRho5OffsetsUseLongRanges();
         TestKsvInnerLengthsAreBounded();
         TestUpdaterTrustBoundaries();
     }
@@ -231,31 +233,78 @@ internal static class HighFixRegressionTests
         ExpectInvalidData(() => ArchiveReadLimits.ValidateDataRange(stream, 0, -1, "synthetic archive"), "negative Rho block size");
     }
 
-    private static void TestFailedArchiveOpenDisposesStreams()
+    private static void TestFailedArchiveOpenClosesStreams()
     {
         var root = CreateTemporaryDirectory("H4FailedOpenHandles");
         try
         {
             var rhoPath = Path.Combine(root, "short.rho");
             File.WriteAllBytes(rhoPath, new byte[0x7F]);
-            var rhoArchive = new RhoArchive();
+            using var rhoArchive = new RhoArchive();
             ExpectThrows<InvalidOperationException>(() => rhoArchive.Open(rhoPath), "short Rho header");
-            rhoArchive.Dispose();
             using (var exclusiveRho = new FileStream(rhoPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                Assert(exclusiveRho.CanRead && exclusiveRho.CanWrite, "Failed Rho Open retained its file handle after Dispose.");
+                Assert(exclusiveRho.CanRead && exclusiveRho.CanWrite, "Failed Rho Open retained its file handle before Dispose.");
 
             var rho5Path = Path.Combine(root, "synthetic_00000.rho5");
             File.WriteAllBytes(rho5Path, new byte[1]);
-            var rho5Archive = new Rho5Archive();
+            using var rho5Archive = new Rho5Archive();
             ExpectThrows<EndOfStreamException>(() => rho5Archive.Open(root, "synthetic", CountryCode.TW), "short Rho5 header");
-            rho5Archive.Dispose();
             using (var exclusiveRho5 = new FileStream(rho5Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                Assert(exclusiveRho5.CanRead && exclusiveRho5.CanWrite, "Failed Rho5 Open retained its file handle after Dispose.");
+                Assert(exclusiveRho5.CanRead && exclusiveRho5.CanWrite, "Failed Rho5 Open retained its file handle before Dispose.");
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static void TestRho5PackNameRegexEscapesMetacharacters()
+    {
+        var root = CreateTemporaryDirectory("M2Rho5PackRegex");
+        try
+        {
+            const string packName = "synthetic.";
+            var payload = Encoding.UTF8.GetBytes("escaped Rho5 pack name");
+            using (var writer = new Rho5Archive())
+            {
+                writer.RootFolder.AddFile(new Rho5File
+                {
+                    Name = "sample.bin",
+                    DataSource = new ByteArrayDataSource(payload)
+                });
+                writer.Save(root, packName, CountryCode.TW, SavePattern.AlwaysRegeneration);
+            }
+
+            // A raw regex dot also matches this malformed sibling and would try
+            // to open it as another part of the same pack.
+            File.WriteAllBytes(Path.Combine(root, "syntheticX_00000.rho5"), new byte[1]);
+
+            using var archive = new Rho5Archive();
+            archive.Open(root, packName, CountryCode.TW);
+            var file = archive.RootFolder.GetFile("/sample.bin") ?? throw new InvalidDataException("Synthetic escaped-name Rho5 file was not found.");
+            AssertBytes(payload, file.GetBytes(), "Rho5 pack name containing a regex metacharacter");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void TestRho5OffsetsUseLongRanges()
+    {
+        const long twoGiB = 2L * 1024 * 1024 * 1024;
+        Assert(ArchiveReadLimits.AlignRho5DataBegin(twoGiB + 1) == twoGiB + 0x400,
+            "Rho5 data begin alignment wrapped at 2 GiB.");
+
+        const long fileLength = twoGiB + 0x400;
+        var validOffset = ArchiveReadLimits.ValidateRho5DataRange(twoGiB, 0, 4, fileLength, "synthetic Rho5 resource");
+        Assert(validOffset == twoGiB, "Rho5 data offset above 2 GiB was not preserved as a long.");
+        ExpectInvalidData(
+            () => ArchiveReadLimits.ValidateRho5DataRange(twoGiB, 1, 1, fileLength, "synthetic Rho5 resource"),
+            "Rho5 resource past a part-file boundary above 2 GiB");
+        ExpectInvalidData(
+            () => ArchiveReadLimits.ValidateRho5DataRange(long.MaxValue, 1, 1, long.MaxValue, "synthetic Rho5 resource"),
+            "overflowing Rho5 data offset");
     }
 
     private static void TestKsvInnerLengthsAreBounded()

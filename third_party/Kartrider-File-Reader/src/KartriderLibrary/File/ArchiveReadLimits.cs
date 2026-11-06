@@ -43,8 +43,51 @@ namespace KartLibrary.File
 
         internal static void ValidateDataRange(Stream stream, long offset, long size, string description)
         {
-            if (offset < 0 || size < 0 || offset > stream.Length || size > stream.Length - offset)
+            ValidateDataRange(stream.Length, offset, size, description);
+        }
+
+        internal static void ValidateDataRange(long fileLength, long offset, long size, string description)
+        {
+            if (fileLength < 0 || offset < 0 || size < 0 || offset > fileLength || size > fileLength - offset)
                 throw new InvalidDataException($"{description} data is outside the archive's declared range.");
+        }
+
+        internal static long AlignRho5DataBegin(long position)
+        {
+            if (position < 0)
+                throw new InvalidDataException("Rho5 data begin position is outside the supported range.");
+
+            long remainder = position % 0x400L;
+            if (remainder == 0)
+                return position;
+
+            try
+            {
+                return checked(position + (0x400L - remainder));
+            }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException("Rho5 data begin position is outside the supported range.", ex);
+            }
+        }
+
+        internal static long ValidateRho5DataRange(long dataBegin, long blockOffset, long dataSize, long fileLength, string description)
+        {
+            if (dataBegin < 0 || blockOffset < 0)
+                throw new InvalidDataException($"{description} data is outside the archive's declared range.");
+
+            long offset;
+            try
+            {
+                offset = checked(dataBegin + checked(blockOffset * 0x400L));
+            }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException($"{description} data is outside the archive's declared range.", ex);
+            }
+
+            ValidateDataRange(fileLength, offset, dataSize, description);
+            return offset;
         }
 
         internal static void ValidateTableFitsFile(long offset, int count, int minimumEntrySize, long fileLength, string description)

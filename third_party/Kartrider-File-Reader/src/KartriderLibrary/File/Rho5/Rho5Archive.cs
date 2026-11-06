@@ -25,7 +25,7 @@ namespace KartLibrary.File
         // private FileStream? _rho5Stream;
         private Dictionary<int, FileStream> _rho5Streams;
         private Dictionary<string, Rho5FileHandler> _fileHandlers;
-        private Dictionary<int, int> _dataBeginPoses;
+        private Dictionary<int, long> _dataBeginPoses;
         private bool _closed;
         #endregion
 
@@ -41,7 +41,7 @@ namespace KartLibrary.File
             _rootFolder = new Rho5Folder();
             _fileHandlers = new Dictionary<string, Rho5FileHandler>();
             _rho5Streams = new Dictionary<int, FileStream>();
-            _dataBeginPoses = new Dictionary<int, int>();
+            _dataBeginPoses = new Dictionary<int, long>();
         }
         #endregion
 
@@ -55,7 +55,7 @@ namespace KartLibrary.File
             // resource with the same path, so process them in numeric filename order.
             foreach (FileInfo fileInfo in dataPackDir.GetFiles().OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase))
             {
-                Regex parrern = new Regex($@"^{dataPackName}_(\d{{5}})\.rho5$");
+                Regex parrern = new Regex($@"^{Regex.Escape(dataPackName)}_(\d{{5}})\.rho5$");
                 Match match = parrern.Match(fileInfo.Name);
                 if (match.Success)
                 {
@@ -157,95 +157,111 @@ namespace KartLibrary.File
             if (!System.IO.File.Exists(filePath))
                 throw new FileNotFoundException($"");
             FileStream rho5Stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (!_rho5Streams.TryAdd(dataPackID, rho5Stream))
+            bool openSucceeded = false;
+            bool streamRegistered = false;
+            try
             {
-                rho5Stream.Dispose();
-                throw new InvalidOperationException($"Rho5 part {dataPackID} is already open.");
-            }
-            string mixingStr = getMixingString(region);
-            string fileName = Path.GetFileName(filePath);
-            Rho5DecryptStream decryptStream = new Rho5DecryptStream(rho5Stream, fileName, mixingStr);
-            BinaryReader reader = new BinaryReader(decryptStream);
+                if (!_rho5Streams.TryAdd(dataPackID, rho5Stream))
+                    throw new InvalidOperationException($"Rho5 part {dataPackID} is already open.");
+                streamRegistered = true;
 
-            int headerOffset = getHeaderOffset(fileName);
-            int filesInfoOffset = headerOffset + getFilesInfoOffset(fileName);
+                string mixingStr = getMixingString(region);
+                string fileName = Path.GetFileName(filePath);
+                Rho5DecryptStream decryptStream = new Rho5DecryptStream(rho5Stream, fileName, mixingStr);
+                BinaryReader reader = new BinaryReader(decryptStream);
 
-            // Reads header
-            decryptStream.Seek(headerOffset, SeekOrigin.Begin);
-            int headerCrc = reader.ReadInt32();
-            int packageVersion = reader.ReadByte();
-            int fileCount = reader.ReadInt32();
-            if (headerCrc != packageVersion + fileCount)
-                throw new Exception("Rho5 header crc mismatch.");
-            if (packageVersion != 2)
-                throw new Exception("unsupported package version.");
-            ArchiveReadLimits.ValidateEntryCount(fileCount, "Rho5 file");
+                int headerOffset = getHeaderOffset(fileName);
+                int filesInfoOffset = headerOffset + getFilesInfoOffset(fileName);
 
-            // Reads files info
-            decryptStream.Seek(filesInfoOffset, SeekOrigin.Begin);
-            decryptStream.SetToFilesInfoKey(fileName, mixingStr);
-            ArchiveReadLimits.ValidateTableFitsFile(filesInfoOffset, fileCount, 40, decryptStream.Length, "Rho5 file-info");
-            for (int i = 0; i < fileCount; i++)
-            {
-                string fileFullPath = reader.ReadText();
-                int fileInfoChecksum = reader.ReadInt32();
-                int unknown = reader.ReadInt32();
-                int offset = reader.ReadInt32();
-                int decompressedSize = reader.ReadInt32();
-                int compressedSize = reader.ReadInt32();
-                byte[] fileChksum = reader.ReadBytes(0x10);
+                // Reads header
+                decryptStream.Seek(headerOffset, SeekOrigin.Begin);
+                int headerCrc = reader.ReadInt32();
+                int packageVersion = reader.ReadByte();
+                int fileCount = reader.ReadInt32();
+                if (headerCrc != packageVersion + fileCount)
+                    throw new Exception("Rho5 header crc mismatch.");
+                if (packageVersion != 2)
+                    throw new Exception("unsupported package version.");
+                ArchiveReadLimits.ValidateEntryCount(fileCount, "Rho5 file");
 
-                int verifyChksum = unknown + offset + decompressedSize + compressedSize;
-                foreach (byte b in fileChksum)
-                    verifyChksum += b;
-
-                if (fileInfoChecksum != verifyChksum)
-                    throw new Exception("fileInfo checksum mismatch.");
-
-                byte[] decryptKey = Rho5Key.GetPackedFileKey(fileChksum, Rho5Key.GetFileKey_U1(mixingStr), fileFullPath);
-
-                Rho5FileHandler fileHandler = new Rho5FileHandler(this, dataPackID, offset, decompressedSize, compressedSize, decryptKey, fileChksum);
-
-                Rho5Folder curFolder = _rootFolder;
-                string[] splitedPath = fileFullPath.Split('/');
-                for (int j = 0; j < splitedPath.Length - 1; j++)
+                // Reads files info
+                decryptStream.Seek(filesInfoOffset, SeekOrigin.Begin);
+                decryptStream.SetToFilesInfoKey(fileName, mixingStr);
+                ArchiveReadLimits.ValidateTableFitsFile(filesInfoOffset, fileCount, 40, decryptStream.Length, "Rho5 file-info");
+                for (int i = 0; i < fileCount; i++)
                 {
-                    string curFolderName = splitedPath[j];
-                    if (!curFolder.ContainsFolder(curFolderName))
+                    string fileFullPath = reader.ReadText();
+                    int fileInfoChecksum = reader.ReadInt32();
+                    int unknown = reader.ReadInt32();
+                    int offset = reader.ReadInt32();
+                    int decompressedSize = reader.ReadInt32();
+                    int compressedSize = reader.ReadInt32();
+                    byte[] fileChksum = reader.ReadBytes(0x10);
+
+                    int verifyChksum = unknown + offset + decompressedSize + compressedSize;
+                    foreach (byte b in fileChksum)
+                        verifyChksum += b;
+
+                    if (fileInfoChecksum != verifyChksum)
+                        throw new Exception("fileInfo checksum mismatch.");
+
+                    byte[] decryptKey = Rho5Key.GetPackedFileKey(fileChksum, Rho5Key.GetFileKey_U1(mixingStr), fileFullPath);
+
+                    Rho5FileHandler fileHandler = new Rho5FileHandler(this, dataPackID, offset, decompressedSize, compressedSize, decryptKey, fileChksum);
+
+                    Rho5Folder curFolder = _rootFolder;
+                    string[] splitedPath = fileFullPath.Split('/');
+                    for (int j = 0; j < splitedPath.Length - 1; j++)
                     {
-                        curFolder.AddFolder(new Rho5Folder()
+                        string curFolderName = splitedPath[j];
+                        if (!curFolder.ContainsFolder(curFolderName))
                         {
-                            Name = curFolderName
-                        });
-                        curFolder.appliedChanges();
+                            curFolder.AddFolder(new Rho5Folder()
+                            {
+                                Name = curFolderName
+                            });
+                            curFolder.appliedChanges();
+                        }
+                        curFolder = curFolder.GetFolder(curFolderName);
                     }
-                    curFolder = curFolder.GetFolder(curFolderName);
-                }
-                // Nexon's live pack sets can repeat a resource path in a later
-                // part. Keep the later part's entry instead of failing the whole
-                // archive; the previous file handler is no longer reachable.
-                if (_rootFolder.ContainsFile(fileFullPath))
-                {
-                    var previousFile = _rootFolder.GetFile(fileFullPath);
-                    previousFile?.Parent?.RemoveFile(previousFile);
-                    if (_fileHandlers.TryGetValue(fileFullPath, out var previousHandler))
-                        previousHandler.releaseHandler();
-                    _fileHandlers.Remove(fileFullPath);
-                }
+                    // Nexon's live pack sets can repeat a resource path in a later
+                    // part. Keep the later part's entry instead of failing the whole
+                    // archive; the previous file handler is no longer reachable.
+                    if (_rootFolder.ContainsFile(fileFullPath))
+                    {
+                        var previousFile = _rootFolder.GetFile(fileFullPath);
+                        previousFile?.Parent?.RemoveFile(previousFile);
+                        if (_fileHandlers.TryGetValue(fileFullPath, out var previousHandler))
+                            previousHandler.releaseHandler();
+                        _fileHandlers.Remove(fileFullPath);
+                    }
 
-                Rho5File rho5File = new Rho5File();
-                rho5File.DataSource = new Rho5DataSource(fileHandler);
-                rho5File.Name = splitedPath[^1];
-                rho5File._dataPackID = dataPackID;
-                rho5File.appliedChanges();
-                curFolder.AddFile(rho5File);
-                curFolder.appliedChanges();
+                    Rho5File rho5File = new Rho5File();
+                    rho5File.DataSource = new Rho5DataSource(fileHandler);
+                    rho5File.Name = splitedPath[^1];
+                    rho5File._dataPackID = dataPackID;
+                    rho5File.appliedChanges();
+                    curFolder.AddFile(rho5File);
+                    curFolder.appliedChanges();
 
-                _fileHandlers.Add(fileFullPath, fileHandler);
+                    _fileHandlers.Add(fileFullPath, fileHandler);
+                }
+                _dataBeginPoses[dataPackID] = ArchiveReadLimits.AlignRho5DataBegin(decryptStream.Position);
+                openSucceeded = true;
             }
-            if (!_dataBeginPoses.ContainsKey(dataPackID))
-                _dataBeginPoses.Add(dataPackID, 0);
-            _dataBeginPoses[dataPackID] = (int)decryptStream.Position + 0x3FF & 0x7FFFFC00;
+            finally
+            {
+                if (!openSucceeded)
+                {
+                    if (streamRegistered)
+                    {
+                        if (_rho5Streams.TryGetValue(dataPackID, out FileStream? registeredStream) && ReferenceEquals(registeredStream, rho5Stream))
+                            _rho5Streams.Remove(dataPackID);
+                        _dataBeginPoses.Remove(dataPackID);
+                    }
+                    rho5Stream.Dispose();
+                }
+            }
 
         }
 
@@ -464,9 +480,9 @@ namespace KartLibrary.File
             if (handler._offset < 0)
                 throw new InvalidDataException($"Rho5 resource size is outside the supported range (part {handler._dataPackID}, block {handler._offset}).");
             using FileStream dataStream = new FileStream(rho5Stream.Name, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var offset = checked((long)_dataBeginPoses[handler._dataPackID] + ((long)handler._offset << 10));
-            if (offset < 0 || offset > dataStream.Length || handler._compressedSize > dataStream.Length - offset)
-                throw new InvalidDataException($"Rho5 resource data is truncated (part {handler._dataPackID}, block {handler._offset}).");
+            var offset = ArchiveReadLimits.ValidateRho5DataRange(
+                _dataBeginPoses[handler._dataPackID], handler._offset, handler._compressedSize, dataStream.Length,
+                $"Rho5 resource (part {handler._dataPackID}, block {handler._offset})");
             Rho5DecryptStream decryptStream = new Rho5DecryptStream(dataStream, handler._key);
             decryptStream.Seek(offset, SeekOrigin.Begin);
             byte[] compressedData = new byte[handler._compressedSize];
