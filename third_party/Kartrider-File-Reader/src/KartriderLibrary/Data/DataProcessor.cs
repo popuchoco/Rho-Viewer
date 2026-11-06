@@ -14,6 +14,8 @@ namespace KartLibrary.Data
     // KR is means "KartRider and Raycity".
     public static class DataProcessor
     {
+        internal const int MaxKRDataBytes = 256 * 1024 * 1024;
+
         public static byte[] EncodeKRData(byte[] Data, bool Encrypted, bool Compressed, uint EncryptKey = 0)
         {
             using (MemoryStream ms = new MemoryStream(Data.Length))
@@ -52,6 +54,8 @@ namespace KartLibrary.Data
 
         public static byte[] DecodeKRData(byte[] OriginalData)
         {
+            if (OriginalData.Length > MaxKRDataBytes)
+                throw new InvalidDataException("KRData is outside the supported size range.");
             using (MemoryStream ms = new MemoryStream(OriginalData))
             {
                 BinaryReader br = new BinaryReader(ms);
@@ -64,6 +68,8 @@ namespace KartLibrary.Data
                 bool Compressed = (ProcessMode & 1) == 1;
                 uint EncryptKey = Encrypted ? br.ReadUInt32() : 0;
                 int DecompressSize = Compressed ? br.ReadInt32() : 0;
+                if (Compressed && (DecompressSize < 0 || DecompressSize > MaxKRDataBytes))
+                    throw new InvalidDataException("KRData decompressed size is outside the supported range.");
                 byte[] originalData = br.ReadBytes((int)(OriginalData.Length - br.BaseStream.Position));
                 byte[] processedData = originalData;
                 if (Encrypted)
@@ -76,7 +82,9 @@ namespace KartLibrary.Data
                     {
                         processedData = new byte[DecompressSize];
                         ZLibStream zs = new ZLibStream(mss, CompressionMode.Decompress);
-                        zs.Read(processedData, 0, processedData.Length);
+                        zs.ReadExactly(processedData);
+                        if (zs.ReadByte() != -1)
+                            throw new InvalidDataException("KRData expands beyond its declared size.");
                     }
                 }
                 uint CheckHash = Adler.Adler32(0, processedData, 0, processedData.Length);
@@ -90,6 +98,9 @@ namespace KartLibrary.Data
         public static byte[] ReadKRData(this BinaryReader br, int TotalLength)
         {
             long initialPos = br.BaseStream.Position;
+            if (TotalLength < 6 || TotalLength > MaxKRDataBytes ||
+                (br.BaseStream.CanSeek && TotalLength > br.BaseStream.Length - initialPos))
+                throw new InvalidDataException("KSV file size is outside the supported range or truncated.");
             byte checkCode = br.ReadByte();
             if (checkCode != 0x53)
                 throw new Exception("It is not KRData Format.");
@@ -99,7 +110,13 @@ namespace KartLibrary.Data
             bool Compressed = (ProcessMode & 1) == 1;
             uint EncryptKey = Encrypted ? br.ReadUInt32() : 0;
             int DecompressSize = Compressed ? br.ReadInt32() : 0;
-            byte[] originalData = br.ReadBytes((int)(TotalLength - (br.BaseStream.Position - initialPos)));
+            if (Compressed && (DecompressSize < 0 || DecompressSize > MaxKRDataBytes))
+                throw new InvalidDataException("KRData decompressed size is outside the supported range.");
+            var payloadLength = TotalLength - (br.BaseStream.Position - initialPos);
+            if (payloadLength < 0)
+                throw new InvalidDataException("KRData header exceeds its declared file size.");
+            byte[] originalData = new byte[checked((int)payloadLength)];
+            br.BaseStream.ReadExactly(originalData);
             byte[] processedData = originalData;
             if (Encrypted)
             {

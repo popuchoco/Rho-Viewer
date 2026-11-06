@@ -153,7 +153,7 @@ namespace KartLibrary.File
         {
             if (!System.IO.File.Exists(filePath))
                 throw new FileNotFoundException($"");
-            FileStream rho5Stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            FileStream rho5Stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             string mixingStr = getMixingString(region);
             string fileName = Path.GetFileName(filePath);
             Rho5DecryptStream decryptStream = new Rho5DecryptStream(rho5Stream, fileName, mixingStr);
@@ -171,10 +171,12 @@ namespace KartLibrary.File
                 throw new Exception("Rho5 header crc mismatch.");
             if (packageVersion != 2)
                 throw new Exception("unsupported package version.");
+            ArchiveReadLimits.ValidateEntryCount(fileCount, "Rho5 file");
 
             // Reads files info
             decryptStream.Seek(filesInfoOffset, SeekOrigin.Begin);
             decryptStream.SetToFilesInfoKey(fileName, mixingStr);
+            ArchiveReadLimits.ValidateTableFitsFile(filesInfoOffset, fileCount, 40, decryptStream.Length, "Rho5 file-info");
             for (int i = 0; i < fileCount; i++)
             {
                 string fileFullPath = reader.ReadText();
@@ -380,7 +382,7 @@ namespace KartLibrary.File
 
             if (reopen)
             {
-                _rho5Streams.Add(dataPackID, new FileStream(fullName, FileMode.Open, FileAccess.Read));
+                _rho5Streams.Add(dataPackID, new FileStream(fullName, FileMode.Open, FileAccess.Read, FileShare.Read));
                 _dataBeginPoses.Add(dataPackID, dataBeginOffset);
             }
 
@@ -452,22 +454,21 @@ namespace KartLibrary.File
             FileStream rho5Stream = _rho5Streams[handler._dataPackID];
             if (rho5Stream is null || !rho5Stream.CanRead)
                 throw new Exception("");
-            // This wrapper shares the archive's SafeFileHandle; disposing it here
-            // would close the parent archive stream. Keep the same lifetime behavior
-            // as the upstream reader while doing bounded exact reads below.
-            FileStream clonedStream = new FileStream(rho5Stream.SafeFileHandle, FileAccess.Read);
-            Rho5DecryptStream decryptStream = new Rho5DecryptStream(clonedStream, handler._key);
             const int maxResourceBytes = 256 * 1024 * 1024;
             if (handler._compressedSize < 0 || handler._compressedSize > maxResourceBytes ||
-                handler._decompressedSize < 0 || handler._decompressedSize > maxResourceBytes)
+                handler._decompressedSize < 0 || handler._decompressedSize > maxResourceBytes || handler._offset < 0)
                 throw new InvalidDataException($"Rho5 resource size is outside the supported range (part {handler._dataPackID}, block {handler._offset}).");
-            int offset = _dataBeginPoses[handler._dataPackID] + (handler._offset << 10);
+            using FileStream dataStream = new FileStream(rho5Stream.Name, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var offset = checked((long)_dataBeginPoses[handler._dataPackID] + ((long)handler._offset << 10));
+            if (offset < 0 || offset > dataStream.Length || handler._compressedSize > dataStream.Length - offset)
+                throw new InvalidDataException($"Rho5 resource data is truncated (part {handler._dataPackID}, block {handler._offset}).");
+            Rho5DecryptStream decryptStream = new Rho5DecryptStream(dataStream, handler._key);
             decryptStream.Seek(offset, SeekOrigin.Begin);
             byte[] compressedData = new byte[handler._compressedSize];
             byte[] decompressedData = new byte[handler._decompressedSize];
             ReadExactly(decryptStream, compressedData, 0, compressedData.Length >= 0x400 ? 0x400 : compressedData.Length);
             if (compressedData.Length >= 0x400)
-                ReadExactly(clonedStream, compressedData, 0x400, compressedData.Length - 0x400);
+                ReadExactly(dataStream, compressedData, 0x400, compressedData.Length - 0x400);
             using (MemoryStream memStream = new MemoryStream(compressedData))
             {
                 decryptStream = new Rho5DecryptStream(memStream, handler._key);

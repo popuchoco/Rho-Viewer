@@ -109,7 +109,7 @@ internal sealed class LpkArchive : IDisposable
                 throw new InvalidDataException($"LPK v4 資源表校驗失敗：{relativePath}");
             if (flags is not (6 or 7) || sections != 0)
                 throw new NotSupportedException($"LPK v4 暫不支援此資源記錄（flags={flags}, sections={sections}）：{relativePath}");
-            if (size > int.MaxValue || stored > int.MaxValue)
+            if (size > 256 * 1024 * 1024 || stored > int.MaxValue)
                 throw new InvalidDataException($"LPK v4 資源大小超出支援範圍：{relativePath}");
 
             entries[index] = new LpkEntry(relativePath, flags, blocks, (int)size, (int)stored, md5);
@@ -150,11 +150,7 @@ internal sealed class LpkArchive : IDisposable
         byte[] output;
         if ((entry.Flags & 1) != 0)
         {
-            using var compressed = new MemoryStream(stored, writable: false);
-            using var zlib = new ZLibStream(compressed, CompressionMode.Decompress);
-            using var decoded = new MemoryStream();
-            zlib.CopyTo(decoded);
-            output = decoded.ToArray();
+            output = InflateExactly(stored, entry.Size, entry.RelativePath);
         }
         else
         {
@@ -166,6 +162,28 @@ internal sealed class LpkArchive : IDisposable
         if (output.Length != entry.Size || !CryptographicOperations.FixedTimeEquals(MD5.HashData(output), entry.Md5))
             throw new InvalidDataException($"LPK v4 資源大小或 MD5 校驗失敗：{entry.RelativePath}");
 
+        return output;
+    }
+
+    internal static byte[] InflateExactly(byte[] compressedData, int expectedSize, string resourceName)
+    {
+        if (expectedSize < 0 || expectedSize > 256 * 1024 * 1024)
+            throw new InvalidDataException($"LPK v4 資源大小超出支援範圍：{resourceName}");
+
+        var output = new byte[expectedSize];
+        using var compressed = new MemoryStream(compressedData, writable: false);
+        using var zlib = new ZLibStream(compressed, CompressionMode.Decompress);
+        var position = 0;
+        while (position < output.Length)
+        {
+            var read = zlib.Read(output, position, output.Length - position);
+            if (read == 0)
+                throw new InvalidDataException($"LPK v4 resource ended before its declared size ({position}/{output.Length} bytes): {resourceName}");
+            position += read;
+        }
+
+        if (zlib.ReadByte() != -1)
+            throw new InvalidDataException($"LPK v4 resource expands beyond its declared size: {resourceName}");
         return output;
     }
 
