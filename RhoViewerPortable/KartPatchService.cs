@@ -75,6 +75,7 @@ internal sealed class KartPatchPlan
     public required string ServerHost { get; init; }
     public required int ServerPort { get; init; }
     public required string PatchBaseUrl { get; init; }
+    public required bool AllowInsecureHttp { get; init; }
     public required IReadOnlyList<KartPatchPlanItem> Items { get; init; }
 
     public IReadOnlyList<KartPatchPlanItem> Changes => Items.Where(item => item.NeedsUpdate).ToArray();
@@ -107,13 +108,13 @@ internal sealed class KartPatchService
     internal const long MaxPatchPlanBytes = 128L * 1024 * 1024 * 1024;
     private static readonly HttpClient HttpClient = CreateHttpClient();
 
-    public async Task<KartPatchPlan> BuildPlanAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken = default)
+    public async Task<KartPatchPlan> BuildPlanAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken = default, bool allowInsecureHttp = false)
     {
         gameDirectory = NormalizeExistingDirectory(gameDirectory);
-        var connection = await KartPatchDiscovery.DiscoverAsync(gameDirectory, region, cancellationToken).ConfigureAwait(false);
-        var patchBaseUrl = CombineUrl(connection.PatchBaseUrl, connection.ServerVersion.ToString());
-        var manifestUrl = CombineUrl(patchBaseUrl, "files.nfo2");
-        using var response = await SendTrustedGetAsync(manifestUrl, patchBaseUrl, cancellationToken).ConfigureAwait(false);
+        var connection = await KartPatchDiscovery.DiscoverAsync(gameDirectory, region, cancellationToken, allowInsecureHttp).ConfigureAwait(false);
+        var patchBaseUrl = CombineUrl(connection.PatchBaseUrl, connection.ServerVersion.ToString(), allowInsecureHttp);
+        var manifestUrl = CombineUrl(patchBaseUrl, "files.nfo2", allowInsecureHttp);
+        using var response = await SendTrustedGetAsync(manifestUrl, patchBaseUrl, cancellationToken, allowInsecureHttp).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"更新清單讀取失敗：HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
 
@@ -167,6 +168,7 @@ internal sealed class KartPatchService
             ServerHost = connection.ServerHost,
             ServerPort = connection.ServerPort,
             PatchBaseUrl = patchBaseUrl,
+            AllowInsecureHttp = allowInsecureHttp,
             Items = items
         };
     }
@@ -217,7 +219,7 @@ internal sealed class KartPatchService
                     TotalFiles = plan.Changes.Count
                 });
 
-                var compressedUrl = CombineUrl(plan.PatchBaseUrl, item.File.RelativePath + ".gz");
+                var compressedUrl = CombineUrl(plan.PatchBaseUrl, item.File.RelativePath + ".gz", plan.AllowInsecureHttp);
                 await DownloadAndExtractVerifyAsync(
                     compressedUrl,
                     plan.PatchBaseUrl,
@@ -236,7 +238,8 @@ internal sealed class KartPatchService
                             TotalFiles = plan.Changes.Count
                         });
                     },
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    plan.AllowInsecureHttp).ConfigureAwait(false);
 
                 File.Move(partialPath, stagedPath, overwrite: true);
                 completedFiles++;
@@ -325,7 +328,8 @@ internal sealed class KartPatchService
         string outputPath,
         KartPatchFile file,
         Action<long> reportBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowInsecureHttp)
     {
         var compressedPath = outputPath + ".gz";
         try
@@ -333,7 +337,7 @@ internal sealed class KartPatchService
             if (file.Size < 0 || file.Size > MaxPatchFileBytes || file.SizeGzipped < 0 || file.SizeGzipped > MaxPatchFileBytes)
                 throw new InvalidDataException($"更新檔大小超過安全上限：{file.RelativePath}");
 
-            using var response = await SendTrustedGetAsync(url, trustedBaseUrl, cancellationToken).ConfigureAwait(false);
+            using var response = await SendTrustedGetAsync(url, trustedBaseUrl, cancellationToken, allowInsecureHttp).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"更新檔下載失敗：{file.RelativePath}；HTTP {(int)response.StatusCode}");
             if (response.Content.Headers.ContentLength is long contentLength && contentLength > file.SizeGzipped)
@@ -575,30 +579,96 @@ internal sealed class KartPatchService
             : path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
-    private static string CombineUrl(string baseUrl, string relative)
+    private static string CombineUrl(string baseUrl, string relative, bool allowInsecureHttp = false)
     {
-        var baseUri = ValidateDiscoveredPatchEndpoint(baseUrl);
+        var baseUri = ValidateDiscoveredPatchEndpoint(baseUrl, allowInsecureHttp);
         var escapedRelative = string.Join("/", relative.Replace('\\', '/').Split('/').Select(Uri.EscapeDataString));
         var combined = new Uri(new Uri(baseUri.ToString().TrimEnd('/') + "/"), escapedRelative).AbsoluteUri;
-        return ValidatePatchUri(combined, baseUrl).AbsoluteUri;
+        return ValidatePatchUri(combined, baseUrl, allowInsecureHttp).AbsoluteUri;
     }
 
-    internal static Uri ValidatePatchUri(string value, string trustedEndpoint)
+    internal static Uri ValidatePatchUri(string value, string trustedEndpoint, bool allowInsecureHttp = false)
     {
-        var uri = ValidateDiscoveredPatchEndpoint(value);
-        var trustedUri = ValidateDiscoveredPatchEndpoint(trustedEndpoint);
+        var uri = ValidateDiscoveredPatchEndpoint(value, allowInsecureHttp);
+        var trustedUri = ValidateDiscoveredPatchEndpoint(trustedEndpoint, allowInsecureHttp);
         if (!SameOrigin(uri, trustedUri))
             throw new InvalidDataException($"更新請求離開 discovery 回傳的 patch endpoint origin：{uri.GetLeftPart(UriPartial.Authority)}");
         return uri;
     }
 
-    private static Uri ValidateDiscoveredPatchEndpoint(string value)
+    internal static Uri ValidateDiscoveredPatchEndpoint(string value, bool allowInsecureHttp = false)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+            (uri.Scheme != Uri.UriSchemeHttps && !(allowInsecureHttp && uri.Scheme == Uri.UriSchemeHttp)) ||
             string.IsNullOrWhiteSpace(uri.Host) || !string.IsNullOrEmpty(uri.UserInfo))
             throw new InvalidDataException($"KartRider.pin/patch socket 回傳的 endpoint 不是有效 HTTP/HTTPS URL：{value}");
+        ValidateEndpointHost(uri.DnsSafeHost);
         return uri;
+    }
+
+    internal static void ValidateEndpointHost(string host)
+    {
+        if (IPAddress.TryParse(host, out var address))
+        {
+            if (!IsGloballyRoutableAddress(address))
+                throw new InvalidDataException($"更新 endpoint 不可使用非公開網路位址：{host}");
+            return;
+        }
+
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".lan", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"更新 endpoint 不可使用本機或區域網路主機：{host}");
+    }
+
+    internal static bool IsGloballyRoutableAddress(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+            return IsGloballyRoutableAddress(address.MapToIPv4());
+
+        var bytes = address.GetAddressBytes();
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var a = bytes[0];
+            var b = bytes[1];
+            var c = bytes[2];
+            return a != 0 && a != 10 && a != 127 && a < 224 &&
+                   !(a == 100 && b is >= 64 and <= 127) &&
+                   !(a == 169 && b == 254) &&
+                   !(a == 172 && b is >= 16 and <= 31) &&
+                   !(a == 192 && b == 0) &&
+                   !(a == 192 && b == 88 && c == 99) &&
+                   !(a == 192 && b == 168) &&
+                   !(a == 198 && (b == 18 || b == 19)) &&
+                   !(a == 198 && b == 51 && c == 100) &&
+                   !(a == 203 && b == 0 && c == 113);
+        }
+
+        if (address.AddressFamily != AddressFamily.InterNetworkV6 || address.IsIPv6LinkLocal ||
+            address.IsIPv6SiteLocal || address.IsIPv6Multicast)
+            return false;
+
+        // Only 2000::/3 is accepted as globally routable unicast here. Exclude the
+        // documentation prefix as well; this also rejects ULA, loopback, and mapped forms.
+        return (bytes[0] & 0xE0) == 0x20 &&
+               !(bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0D && bytes[3] == 0xB8);
+    }
+
+    private static async Task ValidateEndpointHostResolvesPubliclyAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        ValidateEndpointHost(uri.DnsSafeHost);
+        if (IPAddress.TryParse(uri.DnsSafeHost, out var address))
+        {
+            if (!IsGloballyRoutableAddress(address))
+                throw new InvalidDataException($"更新 endpoint 不可使用非公開網路位址：{uri.Host}");
+            return;
+        }
+
+        var addresses = await Dns.GetHostAddressesAsync(uri.DnsSafeHost, cancellationToken).ConfigureAwait(false);
+        if (addresses.Length == 0 || addresses.Any(address => !IsGloballyRoutableAddress(address)))
+            throw new InvalidDataException($"更新 endpoint 主機未解析至公開網路位址：{uri.Host}");
     }
 
     private static bool SameOrigin(Uri left, Uri right)
@@ -606,11 +676,12 @@ internal sealed class KartPatchService
            string.Equals(left.IdnHost, right.IdnHost, StringComparison.OrdinalIgnoreCase) &&
            left.Port == right.Port;
 
-    private static async Task<HttpResponseMessage> SendTrustedGetAsync(string value, string trustedEndpoint, CancellationToken cancellationToken)
+    private static async Task<HttpResponseMessage> SendTrustedGetAsync(string value, string trustedEndpoint, CancellationToken cancellationToken, bool allowInsecureHttp = false)
     {
-        var current = ValidatePatchUri(value, trustedEndpoint);
+        var current = ValidatePatchUri(value, trustedEndpoint, allowInsecureHttp);
         for (var redirects = 0; ; redirects++)
         {
+            await ValidateEndpointHostResolvesPubliclyAsync(current, cancellationToken).ConfigureAwait(false);
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
             var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if ((int)response.StatusCode is < 300 or > 399)
@@ -620,7 +691,7 @@ internal sealed class KartPatchService
             response.Dispose();
             if (location is null || redirects >= 5)
                 throw new HttpRequestException("更新服務重新導向無效或超過 5 次。");
-            current = ValidatePatchUri(location.IsAbsoluteUri ? location.AbsoluteUri : new Uri(current, location).AbsoluteUri, trustedEndpoint);
+            current = ValidatePatchUri(location.IsAbsoluteUri ? location.AbsoluteUri : new Uri(current, location).AbsoluteUri, trustedEndpoint, allowInsecureHttp);
         }
     }
 
@@ -716,18 +787,31 @@ internal static class KartPatchDiscovery
     private const int MaxPinFileBytes = 1024 * 1024;
     private const int MaxPinPayloadBytes = 16 * 1024 * 1024;
 
-    public static async Task<KartPatchConnection> DiscoverAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken)
+    public static async Task<KartPatchConnection> DiscoverAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken, bool allowInsecureHttp = false)
     {
         var pinPath = FindPinFile(gameDirectory);
         var pin = await ParsePinAsync(pinPath, cancellationToken).ConfigureAwait(false);
         var selectedProfile = KartRegionCatalog.Get(region);
         var host = region == KartUpdateRegion.Auto ? pin.Host : selectedProfile.Host;
         var port = region == KartUpdateRegion.Auto ? pin.Port : selectedProfile.Port;
+        ValidateDiscoveryHost(host);
         var patchServer = await ConnectPatchSocketAsync(host, port, cancellationToken).ConfigureAwait(false);
-        var endpoint = string.IsNullOrWhiteSpace(patchServer.Endpoint) ? pin.OfficialPatchUrl : patchServer.Endpoint;
-        if (string.IsNullOrWhiteSpace(endpoint))
-            throw new InvalidDataException("KartRider.pin 沒有可用的更新端點。");
+        var endpoint = RequireSocketEndpoint(patchServer.Endpoint);
+        _ = KartPatchService.ValidateDiscoveredPatchEndpoint(endpoint, allowInsecureHttp);
         return new KartPatchConnection(pinPath, pin.ClientVersion, endpoint, patchServer.Version, region, host, port);
+    }
+
+    internal static void ValidateDiscoveryHost(string host)
+    {
+        if (!IPAddress.TryParse(host, out var address) || !KartPatchService.IsGloballyRoutableAddress(address))
+            throw new InvalidDataException($"更新 discovery 主機必須是公開網路位址：{host}");
+    }
+
+    internal static string RequireSocketEndpoint(string endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+            throw new InvalidDataException("更新服務 socket 沒有提供 patch endpoint。");
+        return endpoint;
     }
 
     private static string FindPinFile(string gameDirectory)
@@ -784,7 +868,7 @@ internal static class KartPatchDiscovery
         reader.Skip(3);
         _ = reader.ReadStringAuto();
         _ = reader.ReadStringAuto();
-        var officialPatchUrl = reader.ReadStringAuto();
+        _ = reader.ReadStringAuto(); // informational only; the socket must provide the active endpoint.
         reader.Skip(5);
         _ = reader.ReadStringAuto();
         if (reader.ReadByte() != 0)
@@ -799,7 +883,7 @@ internal static class KartPatchDiscovery
         var port = reader.ReadUInt16LittleEndian();
         if (port == 0)
             throw new InvalidDataException("KartRider.pin 沒有有效的更新服務埠號。");
-        return new PinInfo(clientVersion, officialPatchUrl, host, port);
+        return new PinInfo(clientVersion, host, port);
     }
 
     private static byte[] InflatePinPayload(byte[] payload)
@@ -820,6 +904,7 @@ internal static class KartPatchDiscovery
 
     private static async Task<PatchSocketResponse> ConnectPatchSocketAsync(string host, int port, CancellationToken cancellationToken)
     {
+        ValidateDiscoveryHost(host);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
         try
@@ -873,7 +958,7 @@ internal static class KartPatchDiscovery
         return result;
     }
 
-    private sealed record PinInfo(int ClientVersion, string OfficialPatchUrl, string Host, int Port);
+    private sealed record PinInfo(int ClientVersion, string Host, int Port);
     private sealed record PatchSocketResponse(int Version, string Endpoint);
 }
 

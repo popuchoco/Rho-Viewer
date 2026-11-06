@@ -12,24 +12,51 @@ namespace KartLibrary.IO
 {
     public static class BinaryReaderExt
     {
+        internal const int MaxTextLength = 1_048_576;
+        internal const int MaxKRStringLength = 32_768;
+
         public static string ReadText(this BinaryReader reader)
         {
-            int count = reader.ReadInt32() << 1;
-            byte[] data = reader.ReadBytes(count);
+            int count = ReadTextByteCount(reader, sizeof(char));
+            byte[] data = ReadExactly(reader, count);
             return Encoding.Unicode.GetString(data);
         }
 
         public static string ReadText(this BinaryReader br, Encoding encoding, int Count)
         {
-            byte[] data = br.ReadBytes(Count);
+            if (Count < 0 || Count > MaxTextLength * 2)
+                throw new InvalidDataException("Text byte length is outside the supported range.");
+            byte[] data = ReadExactly(br, Count);
             return encoding.GetString(data);
         }
 
         public static string ReadText(this BinaryReader br, Encoding encoding)
         {
-            int count = br.ReadInt32() << 1;
-            byte[] data = br.ReadBytes(count);
+            int count = ReadTextByteCount(br, sizeof(char));
+            byte[] data = ReadExactly(br, count);
             return encoding.GetString(data);
+        }
+
+        private static int ReadTextByteCount(BinaryReader reader, int bytesPerCharacter)
+        {
+            int characterCount = reader.ReadInt32();
+            if (characterCount < 0 || characterCount > MaxTextLength)
+                throw new InvalidDataException("Text length is outside the supported range.");
+            try
+            {
+                return checked(characterCount * bytesPerCharacter);
+            }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException("Text length is outside the supported range.", ex);
+            }
+        }
+
+        internal static byte[] ReadExactly(BinaryReader reader, int count)
+        {
+            var data = new byte[count];
+            reader.BaseStream.ReadExactly(data);
+            return data;
         }
 
         public static BinaryXmlTag ReadBinaryXmlTag(this BinaryReader br, Encoding encoding)
@@ -113,7 +140,9 @@ namespace KartLibrary.IO
         public static string ReadKRString(this BinaryReader br)
         {
             int len = br.ReadInt32();
-            byte[] strData = br.ReadBytes(len << 1);
+            if (len < 0 || len > BinaryReaderExt.MaxKRStringLength)
+                throw new InvalidDataException("KSV string length is outside the supported range.");
+            byte[] strData = BinaryReaderExt.ReadExactly(br, checked(len * sizeof(char)));
             return Encoding.GetEncoding("UTF-16").GetString(strData);
         }
 
@@ -143,14 +172,15 @@ namespace KartLibrary.IO
             ki.Unknown6 = br.ReadByte();
             if (ki.RecordHeaderVersion >= 9)
                 ki.Speed = (SpeedType)(br.ReadByte());
-            int playerCount = br.ReadInt32();
+            int minimumPlayerBytes = 52 + (ki.RecordHeaderVersion >= 10 ? 2 : 0) + (ki.RecordHeaderVersion >= 11 ? 4 : 0);
+            int playerCount = ReadBoundedCount(br, "player", 100_000, minimumPlayerBytes);
             PlayerInfo[] players = new PlayerInfo[playerCount];
             for (int i = 0; i < playerCount; i++)
                 players[i] = br.ReadPlayerInfo(ki.RecordHeaderVersion);
             ki.Players = players;
             uint recordClassIdentifier = br.ReadUInt32();
             ki.RecordVersion = KSVStructVersion.GetVersion(recordClassIdentifier);
-            int recordCount = br.ReadInt32();
+            int recordCount = ReadBoundedCount(br, "record", 100_000, sizeof(int));
             RecordData[] records = new RecordData[recordCount];
             for (int i = 0; i < recordCount; i++)
                 records[i] = br.ReadRecordData(ki.RecordHeaderVersion);
@@ -204,7 +234,7 @@ namespace KartLibrary.IO
         public static RecordData ReadRecordData(this BinaryReader br, int KSVHeaderVersion)
         {
             RecordData rd = new RecordData();
-            int totalCount = br.ReadInt32();
+            int totalCount = ReadBoundedCount(br, "record stamp", 1_000_000, 18);
             RecordStamp[] rss = new RecordStamp[totalCount];
             for (int i = 0; i < totalCount; i++)
             {
@@ -212,6 +242,19 @@ namespace KartLibrary.IO
             }
             rd.Stamps = rss;
             return rd;
+        }
+
+        internal static int ReadBoundedCount(BinaryReader reader, string description, int maximum, int minimumEntryBytes)
+        {
+            int count = reader.ReadInt32();
+            if (count < 0 || count > maximum)
+                throw new InvalidDataException($"KSV {description} count is outside the supported range.");
+            if (minimumEntryBytes < 0)
+                throw new ArgumentOutOfRangeException(nameof(minimumEntryBytes));
+            if (minimumEntryBytes > 0 && reader.BaseStream.CanSeek &&
+                count > (reader.BaseStream.Length - reader.BaseStream.Position) / minimumEntryBytes)
+                throw new InvalidDataException($"KSV {description} count exceeds the remaining file data.");
+            return count;
         }
 
         public static RecordStamp ReadRecordStramp(this BinaryReader br, int KSVHeaderVersion)

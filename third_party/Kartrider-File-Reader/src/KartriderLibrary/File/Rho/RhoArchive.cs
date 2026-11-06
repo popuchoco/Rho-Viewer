@@ -82,7 +82,7 @@ namespace KartLibrary.File
                 throw new FileNotFoundException($"");
             if (!_closed)
                 throw new Exception("This RhoArchive instance has opened the other rho file. You should close the opened file to do this operation.");
-            _rhoStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            _rhoStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (_rhoStream.Length < 0x80)
                 throw new InvalidOperationException();
 
@@ -151,6 +151,9 @@ namespace KartLibrary.File
                     throw new Exception("invalid archiveInfo end magic code.");
             }
 
+            ArchiveReadLimits.ValidateEntryCount(dataInfoCount, "Rho block");
+            ArchiveReadLimits.ValidateTableFitsFile(0x100, dataInfoCount, 0x20, _rhoStream.Length, "Rho block");
+
             // Read data information collection.
             _dataInfoMap.EnsureCapacity(dataInfoCount);
             _fileHandlers.EnsureCapacity(dataInfoCount);
@@ -173,6 +176,9 @@ namespace KartLibrary.File
             uint folderKey = RhoKey.GetDirectoryDataKey(_rhoKey);
 
             Queue<(uint folderDataIndex, RhoFolder folder)> procssQueue = new Queue<(uint folderDataIndex, RhoFolder folder)>();
+            HashSet<uint> visitedFolderDataIndices = new HashSet<uint>();
+            ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, 0xFFFFFFFF);
+            int totalNodeCount = 1; // The root folder.
             procssQueue.Enqueue((0xFFFFFFFF, _rootFolder));
 
             while(procssQueue.Count > 0)
@@ -183,16 +189,26 @@ namespace KartLibrary.File
                 {
                     BinaryReader memReader = new BinaryReader(memStream);
                     int folderCount = memReader.ReadInt32();
+                    ArchiveReadLimits.ValidateFolderChildCount(folderCount, "Rho folder");
+                    totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, folderCount);
+                    List<(uint folderDataIndex, RhoFolder folder)> childFolders = new List<(uint folderDataIndex, RhoFolder folder)>(folderCount);
                     for(int i = 0; i < folderCount; i++)
                     {
                         RhoFolder subFolder = new RhoFolder();
                         string name = memReader.ReadNullTerminatedText(true);
                         uint folderDataIndex = memReader.ReadUInt32();
+                        ArchiveReadLimits.RegisterFolderDataIndex(visitedFolderDataIndices, folderDataIndex);
                         subFolder.Name = name;
-                        procssQueue.Enqueue((folderDataIndex, subFolder));
-                        queObj.folder.AddFolder(subFolder);
+                        childFolders.Add((folderDataIndex, subFolder));
                     }
                     int fileCount = memReader.ReadInt32();
+                    ArchiveReadLimits.ValidateFolderChildCount(fileCount, "Rho file");
+                    totalNodeCount = ArchiveReadLimits.ValidateFolderNodeCount(totalNodeCount, fileCount);
+                    foreach (var childFolder in childFolders)
+                    {
+                        procssQueue.Enqueue(childFolder);
+                        queObj.folder.AddFolder(childFolder.folder);
+                    }
                     for(int i = 0; i < fileCount; i++)
                     {
                         RhoFile subFile = new RhoFile();
@@ -369,7 +385,7 @@ namespace KartLibrary.File
                 outFileStream.WriteByte(0x00);
             }
             outFileStream.Close();
-            _rhoStream = new FileStream(fullName, FileMode.Open);
+            _rhoStream = new FileStream(fullName, FileMode.Open, FileAccess.Read, FileShare.Read);
 
             // send applied changes event to RhoFolder instances
             Queue<RhoFolder> folderQueue = new Queue<RhoFolder>();
@@ -396,9 +412,12 @@ namespace KartLibrary.File
 
         public void Dispose()
         {
-            if (!_closed)
-                Close();
+            _rhoStream?.Dispose();
+            _rhoStream = null;
             releaseAllHandlers();
+            _dataInfoMap.Clear();
+            _rootFolder.Clear();
+            _closed = true;
         }
 
         internal Stream? getRhoStream()
@@ -417,20 +436,17 @@ namespace KartLibrary.File
         {
             if (!_dataInfoMap.ContainsKey(dataIndex))
                 throw new Exception("index not exist.");
-            // This wrapper shares the archive's SafeFileHandle; disposing it here
-            // would close the parent archive stream. Keep the same lifetime behavior
-            // as the upstream reader while doing bounded exact reads below.
-            FileStream clonedRhoStream = new FileStream(_rhoStream.SafeFileHandle, FileAccess.Read);
             RhoDataInfo dataInfo = _dataInfoMap[dataIndex];
 
-            const int maxResourceBytes = 256 * 1024 * 1024;
-            if (dataInfo.DataSize < 0 || dataInfo.DataSize > maxResourceBytes ||
-                dataInfo.UncompressedSize < 0 || dataInfo.UncompressedSize > maxResourceBytes)
-                throw new InvalidDataException($"Rho resource size is outside the supported range (index 0x{dataIndex:X8}).");
+            if (_rhoStream is null || !_rhoStream.CanRead)
+                throw new InvalidOperationException("Rho archive is not open.");
+            ArchiveReadLimits.ValidateResourceSizes(dataInfo.DataSize, dataInfo.UncompressedSize, $"Rho (index 0x{dataIndex:X8})");
 
-            clonedRhoStream.Seek(dataInfo.Offset, SeekOrigin.Begin);
+            using FileStream dataStream = new FileStream(_rhoStream.Name, FileMode.Open, FileAccess.Read, FileShare.Read);
+            ArchiveReadLimits.ValidateDataRange(dataStream, dataInfo.Offset, dataInfo.DataSize, $"Rho (index 0x{dataIndex:X8})");
+            dataStream.Seek(dataInfo.Offset, SeekOrigin.Begin);
             byte[] outData = new byte[dataInfo.DataSize];
-            ReadExactly(clonedRhoStream, outData, 0, outData.Length);
+            ReadExactly(dataStream, outData, 0, outData.Length);
             
             if ((dataInfo.BlockProperty & RhoBlockProperty.Compressed) != RhoBlockProperty.None)
             {
@@ -459,15 +475,32 @@ namespace KartLibrary.File
                 RhoDataInfo? secDatainfo = _dataInfoMap.ContainsKey(dataIndex + 1) ? _dataInfoMap[dataIndex + 1] : null;
                 if(secDatainfo is not null)
                 {
-                    Array.Resize(ref outData, outData.Length + secDatainfo.DataSize);
-                    ReadExactly(clonedRhoStream, outData, dataInfo.DataSize, secDatainfo.DataSize);
+                    var combinedLength = ValidatePartialEncryptedLength(outData.Length, secDatainfo.DataSize);
+                    ArchiveReadLimits.ValidateDataRange(dataStream, secDatainfo.Offset, secDatainfo.DataSize, $"Rho secondary block (index 0x{secDatainfo.Index:X8})");
+                    if (secDatainfo.Offset != dataInfo.Offset + dataInfo.DataSize)
+                        throw new InvalidDataException("Rho partial-encrypted secondary block is not contiguous with its primary block.");
+                    Array.Resize(ref outData, combinedLength);
+                    ReadExactly(dataStream, outData, dataInfo.DataSize, secDatainfo.DataSize);
                 }
             }
 
+            // Adler-32 only detects accidental or format corruption; it is not an authenticity check.
             if (dataInfo.Checksum != 0 && Adler.Adler32(0, outData, 0, outData.Length) != dataInfo.Checksum)
                 throw new InvalidDataException($"Rho resource checksum verification failed (index 0x{dataIndex:X8}).");
 
             return outData;
+        }
+
+        internal static int ValidatePartialEncryptedLength(int firstLength, int secondLength)
+        {
+            const int maxResourceBytes = 256 * 1024 * 1024;
+            if (firstLength < 0 || firstLength > maxResourceBytes || secondLength < 0 || secondLength > maxResourceBytes)
+                throw new InvalidDataException("Rho partial-encrypted block size is outside the supported range.");
+
+            var combinedLength = (long)firstLength + secondLength;
+            if (combinedLength > maxResourceBytes)
+                throw new InvalidDataException("Rho partial-encrypted resource exceeds the supported size limit.");
+            return (int)combinedLength;
         }
 
         private static void ReadExactly(Stream stream, byte[] buffer, int offset, int count)
