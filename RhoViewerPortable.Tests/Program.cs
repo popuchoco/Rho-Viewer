@@ -43,16 +43,22 @@ internal static class Program
 
     private static int RunSuite(string name, Action test)
     {
+        Console.WriteLine($"[{DateTimeOffset.Now:O}] START {name}");
+        var status = "FAIL";
         try
         {
             test();
-            Console.WriteLine($"PASS {name}");
+            status = "PASS";
             return 0;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"FAIL {name}: {ex}");
             return 1;
+        }
+        finally
+        {
+            Console.WriteLine($"[{DateTimeOffset.Now:O}] END {name} {status}");
         }
     }
 }

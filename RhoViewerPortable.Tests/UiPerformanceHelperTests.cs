@@ -4,7 +4,7 @@ namespace RhoViewerPortable.Tests;
 
 internal static class UiPerformanceHelperTests
 {
-    public static void Run() => RunAsync().GetAwaiter().GetResult();
+    public static void Run() => Task.Run(RunAsync).GetAwaiter().GetResult();
 
     private static async Task RunAsync()
     {
