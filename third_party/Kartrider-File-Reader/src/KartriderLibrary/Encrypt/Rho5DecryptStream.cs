@@ -20,11 +20,20 @@ namespace KartLibrary.Encrypt
 
         public override long Length => BaseStream.Length;
 
-        public override long Position { get => bufStartPos + bufPos; set { BaseStream.Position = value; bufPos = bufStartPos = 64;  } }
+        public override long Position
+        {
+            get => bufStartPos + bufPos;
+            set
+            {
+                BaseStream.Position = value;
+                bufStartPos = 64;
+                bufPos = 64;
+            }
+        }
 
         private byte[] Buffer = new byte[64];
 
-        private int bufStartPos = 0;
+        private long bufStartPos = 0;
 
         private int bufferCount = 64;
 
@@ -38,7 +47,8 @@ namespace KartLibrary.Encrypt
             KeyProvider = new Rho5KeyProvider();
             KeyProvider.InitFromKey(Key);
             Inited = true;
-            bufPos = bufStartPos = 64;
+            bufStartPos = 64;
+            bufPos = 64;
         }
 
         public Rho5DecryptStream(Stream BaseStream, string fileName, string anotherData)
@@ -47,7 +57,8 @@ namespace KartLibrary.Encrypt
             KeyProvider = new Rho5KeyProvider();
             KeyProvider.InitHeaderKey(fileName,anotherData);
             Inited = true;
-            bufPos = bufStartPos = 64;
+            bufStartPos = 64;
+            bufPos = 64;
         }
 
         public Rho5DecryptStream(Stream BaseStream)
@@ -104,7 +115,7 @@ namespace KartLibrary.Encrypt
 
         private unsafe bool refreshBuffer()
         {
-            bufStartPos = (int)BaseStream.Position;
+            bufStartPos = BaseStream.Position;
             int readLen = BaseStream.Read(Buffer, 0, 64);
             if(readLen <=0)
                 return false;

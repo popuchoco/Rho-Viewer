@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Text;
 using System.IO;
+using KartLibrary.File;
 using KartLibrary.Xml;
 using KartLibrary.Record;
 using KartLibrary.Consts;
@@ -82,14 +83,20 @@ namespace KartLibrary.IO
             if (wideString)
             {
                 char ch;
-                while((ch = (char)br.ReadInt16()) != '\0')
+                while ((ch = (char)br.ReadInt16()) != '\0')
+                {
+                    ArchiveReadLimits.ValidateNullTerminatedTextLength(stringBuilder.Length, "Null-terminated text");
                     stringBuilder.Append(ch);
+                }
             }
             else
             {
                 char ch;
                 while ((ch = (char)br.ReadByte()) != '\0')
+                {
+                    ArchiveReadLimits.ValidateNullTerminatedTextLength(stringBuilder.Length, "Null-terminated text");
                     stringBuilder.Append(ch);
+                }
             }
             return stringBuilder.ToString();
         }

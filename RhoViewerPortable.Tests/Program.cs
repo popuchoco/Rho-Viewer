@@ -27,9 +27,13 @@ internal static class Program
         failures += RunSuite("resource parser malformed-input tests", ParserInputTests.Run);
         failures += RunSuite("BML binary XML-like parser tests", BmlAnalyzerTests.Run);
         failures += RunSuite("updater security tests", UpdaterSecurityTests.Run);
-        failures += RunSuite("H1-H6 offline high-fix regressions", HighFixRegressionTests.Run);
+        failures += RunSuite("H1-H6 and M1-M3 offline archive regressions", HighFixRegressionTests.Run);
+        failures += RunSuite("M4 non-DDS image header limits", NonDdsImageHeaderTests.Run);
+        failures += RunSuite("optional null-terminated text cap", NullTerminatedTextLimitTests.Run);
         failures += RunSuite("CRC and UI mutation-state tests", GeneralTests.Run);
         failures += RunSuite("large virtual resource grid tests", VirtualGridTests.Run);
+        failures += RunSuite("M5 debounce, folder tree, selection, and preview gate regressions", UiPerformanceHelperTests.Run);
+        failures += RunSuite("M5 virtual game update grid test", GameUpdateGridTests.Run);
         failures += RunSuite("bounded preview byte-cache tests", PreviewByteCacheTests.Run);
         failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
         failures += RunSuite("DDS decoding and malformed-input tests", DdsDecoderTests.Run);
@@ -39,10 +43,12 @@ internal static class Program
 
     private static int RunSuite(string name, Action test)
     {
+        Console.WriteLine($"[{DateTimeOffset.Now:O}] START {name}");
+        var status = "FAIL";
         try
         {
             test();
-            Console.WriteLine($"PASS {name}");
+            status = "PASS";
             return 0;
         }
         catch (Exception ex)
@@ -50,6 +56,52 @@ internal static class Program
             Console.Error.WriteLine($"FAIL {name}: {ex}");
             return 1;
         }
+        finally
+        {
+            Console.WriteLine($"[{DateTimeOffset.Now:O}] END {name} {status}");
+        }
+    }
+}
+
+internal static class GameUpdateGridTests
+{
+    public static void Run()
+    {
+        const int itemCount = 100_000;
+        var file = new KartPatchFile
+        {
+            RelativePath = "Data/sample.bin",
+            Crc = 0x12345678,
+            Size = 12,
+            SizeGzipped = 8
+        };
+        var item = new KartPatchPlanItem
+        {
+            File = file,
+            TargetPath = Path.Combine("Data", "sample.bin"),
+            State = KartPatchFileState.Mismatch,
+            LocalSize = 10
+        };
+        var plan = new KartPatchPlan
+        {
+            GameDirectory = Path.GetTempPath(),
+            PinPath = Path.Combine(Path.GetTempPath(), "KartRider.pin"),
+            ClientVersion = 1,
+            ServerVersion = 2,
+            Region = KartUpdateRegion.Auto,
+            ServerHost = "localhost",
+            ServerPort = 39311,
+            PatchBaseUrl = "https://example.invalid/patch/",
+            AllowInsecureHttp = false,
+            Items = Enumerable.Repeat(item, itemCount).ToArray()
+        };
+
+        using var form = new GameUpdateForm(AppSettings.CreateDefault());
+        form.RenderPlan(plan);
+        if (!form.IsUpdateGridVirtualized)
+            throw new InvalidDataException("GameUpdateForm update grid must use DataGridView virtual mode.");
+        if (form.UpdateGridRowCount != itemCount)
+            throw new InvalidDataException($"virtual update grid should expose all {itemCount:N0} items; got {form.UpdateGridRowCount:N0}.");
     }
 }
 

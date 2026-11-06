@@ -41,8 +41,8 @@ internal sealed class DdsPreview : IDisposable
 internal static class DdsImageDecoder
 {
     internal const int MaxInputBytes = 128 * 1024 * 1024;
-    internal const int MaxDecodedBytes = 128 * 1024 * 1024;
-    internal const int MaxDimension = 16_384;
+    internal const int MaxDecodedBytes = ImageDecodeLimits.MaxDecodedBytes;
+    internal const int MaxDimension = ImageDecodeLimits.MaxDimension;
     private const uint DdpfFourCc = 0x4;
     private const uint DdpfRgb = 0x40;
     private const uint DdpfLuminance = 0x2_0000;
@@ -131,10 +131,7 @@ internal static class DdsImageDecoder
     {
         ArgumentNullException.ThrowIfNull(data);
         var header = ReadHeader(data);
-        var pixelCount = checked((long)header.Width * header.Height);
-        var decodedBytes = checked(pixelCount * 4);
-        if (decodedBytes > MaxDecodedBytes)
-            throw new InvalidDataException($"DDS 展開後圖片過大（上限 {MaxDecodedBytes / (1024 * 1024)} MiB）。");
+        var decodedBytes = checked((long)header.Width * header.Height * 4);
 
         var requiredBytes = GetRequiredSurfaceBytes(header);
         if (requiredBytes > data.Length - header.DataOffset)
@@ -201,14 +198,10 @@ internal static class DdsImageDecoder
 
         var heightRaw = ReadUInt32(data, 12);
         var widthRaw = ReadUInt32(data, 16);
-        if (widthRaw == 0 || heightRaw == 0 || widthRaw > MaxDimension || heightRaw > MaxDimension)
-            throw new InvalidDataException($"DDS 圖片尺寸無效或超過 {MaxDimension} × {MaxDimension} 上限。");
+        ImageDecodeLimits.ValidateDimensions(widthRaw, heightRaw, "DDS");
 
         var width = (int)widthRaw;
         var height = (int)heightRaw;
-        var pixelCount = checked((long)width * height);
-        if (pixelCount * 4 > MaxDecodedBytes)
-            throw new InvalidDataException($"DDS 展開後圖片超過 {MaxDecodedBytes / (1024 * 1024)} MiB 上限。");
 
         var depth = ReadUInt32(data, 24);
         var caps2 = ReadUInt32(data, 112);

@@ -8,6 +8,7 @@ namespace RhoViewerPortable;
 internal sealed class MainForm : Form
 {
     private const int PreviewDebounceMilliseconds = 160;
+    private const int SearchDebounceMilliseconds = 180;
     private const long PreviewCacheCapacityBytes = 64L * 1024 * 1024;
     private const int PreviewCacheMaximumEntries = 128;
 
@@ -41,15 +42,19 @@ internal sealed class MainForm : Form
     private readonly ToolStrip _toolStrip = new();
     private readonly HashSet<string> _playbackTempDirectories = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _previewWorkGate = new(1, 1);
+    private readonly DebouncePolicy _searchDebounce = new(SearchDebounceMilliseconds);
     private readonly BoundedByteCache<RhoItem> _previewByteCache = new(PreviewCacheCapacityBytes, PreviewCacheMaximumEntries);
     private CancellationTokenSource? _exportCts;
     private CancellationTokenSource? _previewCts;
+    private CancellationTokenSource? _searchFilterCts;
+    private CancellationTokenSource? _resourceTreeBuildCts;
     private Process? _playbackProcess;
     private string? _activePlaybackTempDirectory;
     private string _selectedFolderPath = string.Empty;
     private RhoArchiveContext? _treeContextFilter;
     private Bitmap? _currentBitmap;
     private int _previewGeneration;
+    private int _resourceTreeGeneration;
     private bool _busy;
     private bool _archiveClearInProgress;
     private bool _closeDrainStarted;
@@ -517,7 +522,7 @@ internal sealed class MainForm : Form
                 ApplyFilter();
             }
         };
-        _searchBox.TextChanged += (_, _) => ApplyFilter();
+        _searchBox.TextChanged += SearchBox_TextChanged;
         _resourceKindFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
         _extensionFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
         _fileGrid.SelectionChanged += (_, _) =>
@@ -534,6 +539,30 @@ internal sealed class MainForm : Form
         DragEnter += MainForm_DragEnter;
         DragDrop += MainForm_DragDrop;
         FormClosing += MainForm_FormClosing;
+    }
+
+    private async void SearchBox_TextChanged(object? sender, EventArgs e)
+    {
+        var requestVersion = _searchDebounce.BeginRequest();
+        var cancellationSource = new CancellationTokenSource();
+        var previous = _searchFilterCts;
+        _searchFilterCts = cancellationSource;
+        previous?.Cancel();
+
+        try
+        {
+            if (await _searchDebounce.WaitForQuietPeriodAsync(requestVersion, cancellationSource.Token) && !IsDisposed)
+                ApplyFilter();
+        }
+        catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_searchFilterCts, cancellationSource))
+                _searchFilterCts = null;
+            cancellationSource.Dispose();
+        }
     }
 
     private void ApplyResponsiveLayout()
@@ -682,10 +711,21 @@ internal sealed class MainForm : Form
         if (_busy || _fileGrid.RowCount == 0)
             return;
 
+        var plan = IndexSelectionPolicy.CreateInvertPlan(
+            _fileGrid.RowCount,
+            _fileGrid.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Index));
         using (_uiMutations.Enter(UiMutationKind.SelectionBatch))
         {
-            foreach (DataGridViewRow row in _fileGrid.Rows)
-                row.Selected = !row.Selected;
+            if (plan.SelectAllFirst)
+                _fileGrid.SelectAll();
+            else
+                _fileGrid.ClearSelection();
+
+            foreach (var range in plan.Ranges)
+            {
+                for (var rowIndex = range.Start; rowIndex < range.EndExclusive; rowIndex++)
+                    _fileGrid.Rows[rowIndex].Selected = plan.SelectedValueForRanges;
+            }
         }
         UpdateButtons();
         SchedulePreviewSelected();
@@ -959,74 +999,103 @@ internal sealed class MainForm : Form
         UpdateBreadcrumb();
     }
 
-    private void RefreshResourceTree()
+    private void RefreshResourceTree() => _ = RefreshResourceTreeAsync();
+
+    private async Task RefreshResourceTreeAsync()
     {
-        using var treeUpdate = _uiMutations.Enter(UiMutationKind.ResourceTreeRebuild);
-        _resourceTree.BeginUpdate();
+        if (IsDisposed || _closeDrainStarted)
+            return;
+
+        var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context;
+        var contexts = selectedArchive is null
+            ? _contexts.OrderBy(context => context.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray()
+            : new[] { selectedArchive! };
+        var sources = contexts.Select(context => new FolderTreeSource<RhoArchiveContext>(
+            context.DisplayName,
+            context,
+            () => context.Items.Select(item => item.RelativePath))).ToArray();
+
+        var generation = ++_resourceTreeGeneration;
+        var cancellationSource = new CancellationTokenSource();
+        var previous = _resourceTreeBuildCts;
+        _resourceTreeBuildCts = cancellationSource;
+        previous?.Cancel();
+
         try
         {
-            _resourceTree.Nodes.Clear();
-            var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context;
-            var root = new TreeNode(selectedArchive is null ? "全部封包" : selectedArchive.DisplayName)
+            // The snapshot and detached TreeNodes are built away from the UI.
+            // Only the live TreeView is touched after this await, which resumes
+            // on the WinForms synchronization context captured here.
+            var root = await Task.Run(() =>
             {
-                Tag = new ResourceTreeNodeTag(selectedArchive, string.Empty)
-            };
-            _resourceTree.Nodes.Add(root);
+                var snapshot = FolderTreeBuilder.Build(
+                    selectedArchive is null ? "全部封包" : selectedArchive.DisplayName,
+                    selectedArchive,
+                    sources,
+                    static (context, path) => new ResourceTreeNodeTag(context, path),
+                    cancellationSource.Token);
+                return CreateDetachedTreeNodes(snapshot, cancellationSource.Token);
+            }, cancellationSource.Token);
 
-            IEnumerable<RhoArchiveContext> contexts = selectedArchive is null
-                ? _contexts.OrderBy(context => context.DisplayName, StringComparer.OrdinalIgnoreCase)
-                : new[] { selectedArchive };
-            foreach (var context in contexts)
+            if (cancellationSource.IsCancellationRequested || generation != _resourceTreeGeneration || IsDisposed || _closeDrainStarted)
+                return;
+
+            using var treeUpdate = _uiMutations.Enter(UiMutationKind.ResourceTreeRebuild);
+            _resourceTree.BeginUpdate();
+            try
             {
-                var contextRoot = selectedArchive is null
-                    ? new TreeNode(context.DisplayName) { Tag = new ResourceTreeNodeTag(context, string.Empty) }
-                    : root;
+                _resourceTree.Nodes.Clear();
+                _resourceTree.Nodes.Add(root);
+                root.Expand();
                 if (selectedArchive is null)
-                    root.Nodes.Add(contextRoot);
-                AddFolderNodes(context, contextRoot);
+                    foreach (TreeNode child in root.Nodes)
+                        child.Expand();
+                _resourceTree.SelectedNode = FindTreeNode(root, selectedArchive, _selectedFolderPath) ?? root;
             }
-
-            root.Expand();
-            if (selectedArchive is null)
-                foreach (TreeNode child in root.Nodes)
-                    child.Expand();
-            _resourceTree.SelectedNode = FindTreeNode(root, selectedArchive, _selectedFolderPath) ?? root;
+            finally
+            {
+                _resourceTree.EndUpdate();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("ResourceTree", "failed to build folder tree", ex);
         }
         finally
         {
-            _resourceTree.EndUpdate();
+            if (ReferenceEquals(_resourceTreeBuildCts, cancellationSource))
+                _resourceTreeBuildCts = null;
+            cancellationSource.Dispose();
         }
     }
 
-    private static void AddFolderNodes(RhoArchiveContext context, TreeNode contextRoot)
+    private static TreeNode CreateDetachedTreeNodes<TTag>(FolderTreeNode<TTag> snapshot, CancellationToken cancellationToken)
     {
-        var nodes = new Dictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase)
+        var root = new TreeNode(snapshot.Text) { Tag = snapshot.Tag };
+        var pending = new Stack<(FolderTreeNode<TTag> Snapshot, TreeNode Node)>();
+        pending.Push((snapshot, root));
+        while (pending.Count > 0)
         {
-            [string.Empty] = contextRoot
-        };
-        foreach (var item in context.Items)
-        {
-            var parts = item.RelativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length <= 1)
-                continue;
-
-            var path = string.Empty;
-            var parent = contextRoot;
-            for (var i = 0; i < parts.Length - 1; i++)
+            cancellationToken.ThrowIfCancellationRequested();
+            var (snapshotNode, treeNode) = pending.Pop();
+            foreach (var childSnapshot in snapshotNode.Children)
             {
-                path = string.IsNullOrEmpty(path) ? parts[i] : $"{path}/{parts[i]}";
-                if (!nodes.TryGetValue(path, out var child))
-                {
-                    child = new TreeNode(parts[i])
-                    {
-                        Tag = new ResourceTreeNodeTag(context, path)
-                    };
-                    parent.Nodes.Add(child);
-                    nodes[path] = child;
-                }
-                parent = child;
+                var child = new TreeNode(childSnapshot.Text) { Tag = childSnapshot.Tag };
+                treeNode.Nodes.Add(child);
+                pending.Push((childSnapshot, child));
             }
         }
+
+        return root;
+    }
+
+    private void CancelResourceTreeBuild()
+    {
+        _resourceTreeGeneration++;
+        _resourceTreeBuildCts?.Cancel();
     }
 
     private static TreeNode? FindTreeNode(TreeNode root, RhoArchiveContext? context, string relativePath)
@@ -1212,17 +1281,21 @@ internal sealed class MainForm : Form
 
         _previewTitle.Text = $"{item.Owner.DisplayName} / {item.RelativePath}";
         _previewText.Text = "正在解碼資源…";
-        var gateEntered = false;
         try
         {
-            await _previewWorkGate.WaitAsync(cancellationToken);
-            gateEntered = true;
-
             if (!_previewByteCache.TryGetValue(item, out var bytes))
             {
-                bytes = await Task.Run(item.ReadBytes, cancellationToken);
-                cancellationToken.ThrowIfCancellationRequested();
-                _previewByteCache.Add(item, bytes);
+                bytes = await SupersededWorkGate.RunWorkThenCommitAsync(
+                    _previewWorkGate,
+                    _ => Task.Run(item.ReadBytes, cancellationToken),
+                    readBytes =>
+                    {
+                        if (_previewByteCache.TryGetValue(item, out var cachedBytes))
+                            return cachedBytes;
+                        _previewByteCache.Add(item, readBytes);
+                        return readBytes;
+                    },
+                    cancellationToken);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -1251,11 +1324,6 @@ internal sealed class MainForm : Form
             if (generation == _previewGeneration && !IsDisposed)
                 _previewText.Text = BuildItemInfo(item, item.Size) + Environment.NewLine + Environment.NewLine + "解碼失敗：" + ex.Message;
         }
-        finally
-        {
-            if (gateEntered)
-                _previewWorkGate.Release();
-        }
     }
 
     private static PreviewContent CreatePreviewContent(RhoItem item, byte[] bytes)
@@ -1272,8 +1340,11 @@ internal sealed class MainForm : Form
 
         if (item.Extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif")
         {
+            var dimensions = NonDdsImageHeaderReader.ReadDimensions(bytes, item.Extension);
             using var stream = new MemoryStream(bytes, writable: false);
             using var source = Image.FromStream(stream);
+            if (source.Width != dimensions.Width || source.Height != dimensions.Height)
+                throw new InvalidDataException("圖片解碼尺寸與檔案標頭不符。");
             var bitmap = new Bitmap(source);
             return new PreviewContent(
                 $"{item.Name}  ·  {source.Width} × {source.Height}  ·  {FormatSize(bytes.Length)}",
@@ -1440,14 +1511,13 @@ internal sealed class MainForm : Form
         StopAudio();
         SetBusy(true, $"正在解出音效：{item.Name}…");
         AppLogger.Info("PlayAudio", $"started={item.Owner.DisplayName}/{item.RelativePath}");
+        var shellHandoff = false;
         try
         {
             var bytes = await Task.Run(item.ReadBytes);
             var playbackDirectory = Path.Combine(Path.GetTempPath(), "RhoViewerPortable", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(playbackDirectory);
-            var fileName = SanitizeFileName(item.Name);
-            if (!fileName.EndsWith(item.Extension, StringComparison.OrdinalIgnoreCase))
-                fileName += item.Extension;
+            var fileName = WindowsFileNameRules.CreatePlaybackTempFileName(item.Name, item.Extension);
             var tempFile = Path.Combine(playbackDirectory, fileName);
             File.WriteAllBytes(tempFile, bytes);
             _playbackTempDirectories.Add(playbackDirectory);
@@ -1456,8 +1526,14 @@ internal sealed class MainForm : Form
             var launched = TryLaunchBundledPlayer(tempFile, out process) || TryLaunchDefaultPlayer(tempFile, out process);
             if (launched)
             {
-                _activePlaybackTempDirectory = playbackDirectory;
+                shellHandoff = process is null;
+                _activePlaybackTempDirectory = shellHandoff ? null : playbackDirectory;
                 _playbackProcess = process;
+                var cleanupMode = PlaybackTempCleanupPolicy.ForPlayerProcess(process is not null);
+                // A shell association does not expose the real player's lifetime. Keep
+                // its file outside app-exit cleanup; the system temp folder is not permanent storage.
+                if (!PlaybackTempCleanupPolicy.ShouldTrackForApplicationCleanup(cleanupMode))
+                    _playbackTempDirectories.Remove(playbackDirectory);
                 if (_playbackProcess is not null)
                 {
                     _playbackProcess.EnableRaisingEvents = true;
@@ -1470,7 +1546,7 @@ internal sealed class MainForm : Form
                 }
                 else
                 {
-                    _statusLabel.Text = $"已交給 Windows 預設播放器：{item.Name}";
+                    _statusLabel.Text = $"已交給 Windows 預設播放器：{item.Name}；暫存檔留在系統暫存資料夾，程式不會自動清理。";
                 }
                 AppLogger.Info("PlayAudio", $"launched={item.Name}; temp={tempFile}; process={(process is null ? "shell" : process.Id.ToString())}");
                 UpdateButtons();
@@ -1492,7 +1568,9 @@ internal sealed class MainForm : Form
         {
             var status = _playbackProcess is not null || _activePlaybackTempDirectory is not null
                 ? "音效已啟動；按「停止音效」可結束並清理暫存檔。"
-                : $"已載入 {_contexts.Count} 個封包、{_allItems.Count:N0} 個資源";
+                : shellHandoff
+                    ? "音效已交給 Windows 預設播放器；暫存檔留在系統暫存資料夾，程式不會自動清理。Windows 或使用者仍可能清除該檔案。"
+                    : $"已載入 {_contexts.Count} 個封包、{_allItems.Count:N0} 個資源";
             SetBusy(false, status);
         }
     }
@@ -1552,12 +1630,18 @@ internal sealed class MainForm : Form
             }
         }
 
-        if (directory is not null)
+        var canCleanupDirectory = PlaybackTempCleanupPolicy.CanCleanup(
+            PlaybackTempCleanupPolicy.ForPlayerProcess(process is not null));
+        if (directory is not null && canCleanupDirectory)
             CleanupPlaybackDirectory(directory);
+        else if (directory is not null)
+            AppLogger.Info("StopAudio", $"deferred temp cleanup for shell-associated player; directory={directory}");
         if (!_busy && (process is not null || directory is not null))
         {
             AppLogger.Info("StopAudio", $"process={(process is null ? "none" : process.Id.ToString())}; directory={directory}");
-            _statusLabel.Text = "音效已停止，暫存檔已清理。";
+            _statusLabel.Text = canCleanupDirectory
+                ? "音效已停止，暫存檔已清理。"
+                : "音效已交給預設播放器；為避免影響播放，暫存檔保留。";
         }
         UpdateButtons();
     }
@@ -1605,11 +1689,14 @@ internal sealed class MainForm : Form
         process = null;
         try
         {
-            process = Process.Start(new ProcessStartInfo
+            using var shellLaunchProcess = Process.Start(new ProcessStartInfo
             {
                 FileName = tempFile,
                 UseShellExecute = true
             });
+            // ShellExecute can return a short-lived helper process rather than the
+            // real associated player. Treat this as an untracked handoff and retain
+            // the file instead of cleaning it when that helper exits.
             return true;
         }
         catch (Win32Exception)
@@ -1760,13 +1847,7 @@ internal sealed class MainForm : Form
     }
 
     private static string SanitizeFileName(string value)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        var builder = new StringBuilder(value.Length);
-        foreach (var character in value)
-            builder.Append(invalid.Contains(character) ? '_' : character);
-        return string.IsNullOrWhiteSpace(builder.ToString()) ? "unnamed" : builder.ToString();
-    }
+        => WindowsFileNameRules.SanitizeFileName(value);
 
     private async void ClearArchives()
     {
@@ -1774,6 +1855,8 @@ internal sealed class MainForm : Form
             return;
 
         _archiveClearInProgress = true;
+        _searchFilterCts?.Cancel();
+        CancelResourceTreeBuild();
         var clearCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _archiveClearCompletion = clearCompletion;
         _statusLabel.Text = "正在停止預覽並清除封包…";
@@ -1805,6 +1888,8 @@ internal sealed class MainForm : Form
 
         _closeDrainStarted = true;
         SaveWindowLayout();
+        _searchFilterCts?.Cancel();
+        CancelResourceTreeBuild();
         _previewCts?.Cancel();
         if (_archiveClearCompletion is { } clearCompletion)
             await clearCompletion.Task;

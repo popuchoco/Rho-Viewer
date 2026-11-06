@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Text;
@@ -24,9 +25,14 @@ internal static class HighFixRegressionTests
         TestRhoFolderTraversalIsBounded();
         TestStoredResourceSizesAreBounded();
         TestArchiveDataRangesAreBounded();
-        TestFailedArchiveOpenDisposesStreams();
+        TestFailedArchiveOpenClosesStreams();
+        TestRho5PackNameRegexEscapesMetacharacters();
+        TestRho5OffsetsUseLongRanges();
         TestKsvInnerLengthsAreBounded();
         TestUpdaterTrustBoundaries();
+        LowFixPortableTests.Run();
+        TestUpdaterSharesWindowsFilenameValidation();
+        TestWindowsApplyDirectoryLease();
     }
 
     private static void TestArchiveReadsSurviveGarbageCollection()
@@ -231,31 +237,78 @@ internal static class HighFixRegressionTests
         ExpectInvalidData(() => ArchiveReadLimits.ValidateDataRange(stream, 0, -1, "synthetic archive"), "negative Rho block size");
     }
 
-    private static void TestFailedArchiveOpenDisposesStreams()
+    private static void TestFailedArchiveOpenClosesStreams()
     {
         var root = CreateTemporaryDirectory("H4FailedOpenHandles");
         try
         {
             var rhoPath = Path.Combine(root, "short.rho");
             File.WriteAllBytes(rhoPath, new byte[0x7F]);
-            var rhoArchive = new RhoArchive();
+            using var rhoArchive = new RhoArchive();
             ExpectThrows<InvalidOperationException>(() => rhoArchive.Open(rhoPath), "short Rho header");
-            rhoArchive.Dispose();
             using (var exclusiveRho = new FileStream(rhoPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                Assert(exclusiveRho.CanRead && exclusiveRho.CanWrite, "Failed Rho Open retained its file handle after Dispose.");
+                Assert(exclusiveRho.CanRead && exclusiveRho.CanWrite, "Failed Rho Open retained its file handle before Dispose.");
 
             var rho5Path = Path.Combine(root, "synthetic_00000.rho5");
             File.WriteAllBytes(rho5Path, new byte[1]);
-            var rho5Archive = new Rho5Archive();
+            using var rho5Archive = new Rho5Archive();
             ExpectThrows<EndOfStreamException>(() => rho5Archive.Open(root, "synthetic", CountryCode.TW), "short Rho5 header");
-            rho5Archive.Dispose();
             using (var exclusiveRho5 = new FileStream(rho5Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                Assert(exclusiveRho5.CanRead && exclusiveRho5.CanWrite, "Failed Rho5 Open retained its file handle after Dispose.");
+                Assert(exclusiveRho5.CanRead && exclusiveRho5.CanWrite, "Failed Rho5 Open retained its file handle before Dispose.");
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static void TestRho5PackNameRegexEscapesMetacharacters()
+    {
+        var root = CreateTemporaryDirectory("M2Rho5PackRegex");
+        try
+        {
+            const string packName = "synthetic.";
+            var payload = Encoding.UTF8.GetBytes("escaped Rho5 pack name");
+            using (var writer = new Rho5Archive())
+            {
+                writer.RootFolder.AddFile(new Rho5File
+                {
+                    Name = "sample.bin",
+                    DataSource = new ByteArrayDataSource(payload)
+                });
+                writer.Save(root, packName, CountryCode.TW, SavePattern.AlwaysRegeneration);
+            }
+
+            // A raw regex dot also matches this malformed sibling and would try
+            // to open it as another part of the same pack.
+            File.WriteAllBytes(Path.Combine(root, "syntheticX_00000.rho5"), new byte[1]);
+
+            using var archive = new Rho5Archive();
+            archive.Open(root, packName, CountryCode.TW);
+            var file = archive.RootFolder.GetFile("/sample.bin") ?? throw new InvalidDataException("Synthetic escaped-name Rho5 file was not found.");
+            AssertBytes(payload, file.GetBytes(), "Rho5 pack name containing a regex metacharacter");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void TestRho5OffsetsUseLongRanges()
+    {
+        const long twoGiB = 2L * 1024 * 1024 * 1024;
+        Assert(ArchiveReadLimits.AlignRho5DataBegin(twoGiB + 1) == twoGiB + 0x400,
+            "Rho5 data begin alignment wrapped at 2 GiB.");
+
+        const long fileLength = twoGiB + 0x400;
+        var validOffset = ArchiveReadLimits.ValidateRho5DataRange(twoGiB, 0, 4, fileLength, "synthetic Rho5 resource");
+        Assert(validOffset == twoGiB, "Rho5 data offset above 2 GiB was not preserved as a long.");
+        ExpectInvalidData(
+            () => ArchiveReadLimits.ValidateRho5DataRange(twoGiB, 1, 1, fileLength, "synthetic Rho5 resource"),
+            "Rho5 resource past a part-file boundary above 2 GiB");
+        ExpectInvalidData(
+            () => ArchiveReadLimits.ValidateRho5DataRange(long.MaxValue, 1, 1, long.MaxValue, "synthetic Rho5 resource"),
+            "overflowing Rho5 data offset");
     }
 
     private static void TestKsvInnerLengthsAreBounded()
@@ -315,6 +368,167 @@ internal static class HighFixRegressionTests
 
         Assert(!KartPatchService.IsGloballyRoutableAddress(IPAddress.Parse("192.0.2.10")), "Documentation IPv4 block was accepted as globally routable.");
         Assert(!KartPatchService.IsGloballyRoutableAddress(IPAddress.Parse("2001:db8::1")), "Documentation IPv6 block was accepted as globally routable.");
+    }
+
+    private static void TestUpdaterSharesWindowsFilenameValidation()
+    {
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("CON.txt"), "reserved device filename with extension");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("NUL"), "reserved NUL filename");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("CON .txt"), "reserved device filename with pre-extension space");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("Data/file."), "trailing dot in update path");
+        ExpectInvalidData(() => KartPatchService.NormalizeRelativePath("Data/file "), "trailing space in update path");
+        Assert(KartPatchService.NormalizeRelativePath("Data/safe.bin") == "Data/safe.bin",
+            "a normal update path was changed by shared Windows filename validation");
+    }
+
+    private static void TestWindowsApplyDirectoryLease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Console.WriteLine("SKIP Windows-only updater directory lease integration test");
+            return;
+        }
+
+        var root = CreateTemporaryDirectory("L3DirectoryLease");
+        var heldDirectory = Path.Combine(root, "target");
+        var movedDirectory = Path.Combine(root, "target-moved");
+        WindowsDirectoryPathLease? lease = null;
+        var synchronization = new object();
+        var firstRenameFinished = false;
+        var continueAfterRelease = false;
+        var runRenameAfterRelease = false;
+        var renameBlocked = false;
+        var renameSucceededAfterRelease = false;
+        Exception? workerError = null;
+        var workerStarted = false;
+
+        try
+        {
+            Directory.CreateDirectory(heldDirectory);
+            lease = WindowsDirectoryPathLease.Acquire(heldDirectory);
+            var worker = new Thread(() =>
+            {
+                try
+                {
+                    try
+                    {
+                        Directory.Move(heldDirectory, movedDirectory);
+                    }
+                    catch (IOException)
+                    {
+                        renameBlocked = true;
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        renameBlocked = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        workerError = ex;
+                    }
+
+                    lock (synchronization)
+                    {
+                        firstRenameFinished = true;
+                        Monitor.PulseAll(synchronization);
+                        while (!continueAfterRelease)
+                            Monitor.Wait(synchronization);
+                    }
+
+                    if (runRenameAfterRelease)
+                    {
+                        try
+                        {
+                            Directory.Move(heldDirectory, movedDirectory);
+                            renameSucceededAfterRelease = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            workerError = ex;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    workerError ??= ex;
+                    lock (synchronization)
+                    {
+                        firstRenameFinished = true;
+                        Monitor.PulseAll(synchronization);
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        Directory.Delete(root, recursive: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        workerError ??= ex;
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "Windows directory lease test"
+            };
+
+            worker.Start();
+            workerStarted = true;
+
+            var timeout = TimeSpan.FromSeconds(10);
+            var stopwatch = Stopwatch.StartNew();
+            var firstRenameTimedOut = false;
+            lock (synchronization)
+            {
+                while (!firstRenameFinished)
+                {
+                    var remaining = timeout - stopwatch.Elapsed;
+                    if (remaining <= TimeSpan.Zero || !Monitor.Wait(synchronization, remaining))
+                    {
+                        firstRenameTimedOut = true;
+                        break;
+                    }
+                }
+            }
+
+            lease.Dispose();
+            lease = null;
+            lock (synchronization)
+            {
+                runRenameAfterRelease = !firstRenameTimedOut && renameBlocked && workerError is null;
+                continueAfterRelease = true;
+                Monitor.PulseAll(synchronization);
+            }
+
+            var workerFinished = worker.Join(timeout);
+            if (firstRenameTimedOut)
+                throw new TimeoutException("The Windows directory rename did not finish within 10 seconds while the lease was held.");
+            if (!workerFinished)
+                throw new TimeoutException("The Windows directory rename did not finish within 10 seconds after lease release.");
+            if (workerError is not null)
+                throw new InvalidDataException("The Windows directory lease integration test failed.", workerError);
+
+            Assert(renameBlocked, "the Windows directory lease did not block a directory rename while held");
+            Assert(renameSucceededAfterRelease, "the Windows directory rename did not succeed after lease release");
+        }
+        finally
+        {
+            lease?.Dispose();
+            if (workerStarted)
+            {
+                lock (synchronization)
+                {
+                    continueAfterRelease = true;
+                    Monitor.PulseAll(synchronization);
+                }
+            }
+            else
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     private static byte[] ReadSyntheticKsvWithPlayerCount(int playerCount)

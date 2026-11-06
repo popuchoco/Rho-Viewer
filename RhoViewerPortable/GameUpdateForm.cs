@@ -19,6 +19,7 @@ internal sealed class GameUpdateForm : Form
     private readonly Button _cancelButton = new();
     private CancellationTokenSource? _operationCts;
     private KartPatchPlan? _plan;
+    private IReadOnlyList<KartPatchPlanItem> _displayedItems = Array.Empty<KartPatchPlanItem>();
     private bool _running;
 
     public GameUpdateForm(AppSettings currentSettings)
@@ -52,6 +53,9 @@ internal sealed class GameUpdateForm : Form
         settings.Normalize();
         return settings;
     }
+
+    internal bool IsUpdateGridVirtualized => _fileGrid.VirtualMode;
+    internal int UpdateGridRowCount => _fileGrid.RowCount;
 
     private void BuildLayout()
     {
@@ -331,6 +335,7 @@ internal sealed class GameUpdateForm : Form
         _fileGrid.ReadOnly = true;
         _fileGrid.MultiSelect = false;
         _fileGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _fileGrid.VirtualMode = true;
         _fileGrid.BackgroundColor = Color.White;
         _fileGrid.BorderStyle = BorderStyle.FixedSingle;
         _fileGrid.RowHeadersVisible = false;
@@ -360,6 +365,47 @@ internal sealed class GameUpdateForm : Form
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "本機大小", Name = "LocalSize", Width = 112 });
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "更新大小", Name = "RemoteSize", Width = 112 });
         _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "CRC", Name = "Crc", Width = 108 });
+        _fileGrid.CellValueNeeded += FileGrid_CellValueNeeded;
+        _fileGrid.CellFormatting += FileGrid_CellFormatting;
+    }
+
+    private void FileGrid_CellValueNeeded(object? sender, DataGridViewCellValueEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.RowIndex >= _displayedItems.Count)
+            return;
+
+        var item = _displayedItems[e.RowIndex];
+        e.Value = e.ColumnIndex switch
+        {
+            0 => GetStateText(item),
+            1 => item.File.RelativePath,
+            2 => FormatSize(item.LocalSize),
+            3 => FormatSize(item.File.Size),
+            4 => $"0x{item.File.Crc:X8}",
+            _ => null
+        };
+    }
+
+    private void FileGrid_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (e.RowIndex >= 0 && e.RowIndex < _displayedItems.Count)
+            e.CellStyle.ForeColor = _displayedItems[e.RowIndex].NeedsUpdate
+                ? Color.FromArgb(156, 88, 0)
+                : Color.FromArgb(35, 44, 58);
+    }
+
+    private static string GetStateText(KartPatchPlanItem item) => item.State switch
+    {
+        KartPatchFileState.Unchanged => "已是最新",
+        KartPatchFileState.Missing => "缺少",
+        _ => "需更新"
+    };
+
+    private void ClearDisplayedItems()
+    {
+        _fileGrid.CurrentCell = null;
+        _displayedItems = Array.Empty<KartPatchPlanItem>();
+        _fileGrid.RowCount = 0;
     }
 
     private async Task CheckAsync()
@@ -371,7 +417,7 @@ internal sealed class GameUpdateForm : Form
         _operationCts = cts;
         _running = true;
         _plan = null;
-        _fileGrid.Rows.Clear();
+        ClearDisplayedItems();
         _summaryLabel.Text = "正在讀取 KartRider.pin 並檢查更新服務……";
         _statusLabel.Text = "檢查中";
         UpdateControls();
@@ -439,7 +485,7 @@ internal sealed class GameUpdateForm : Form
                 "遊戲更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
             _summaryLabel.Text = $"更新完成：{result.UpdatedFiles:N0} 個檔案；備份：{result.BackupDirectory}";
             _plan = null;
-            _fileGrid.Rows.Clear();
+            ClearDisplayedItems();
         }
         catch (OperationCanceledException)
         {
@@ -462,24 +508,15 @@ internal sealed class GameUpdateForm : Form
         }
     }
 
-    private void RenderPlan(KartPatchPlan plan)
+    internal void RenderPlan(KartPatchPlan plan)
     {
         _clientVersion.Text = plan.ClientVersion.ToString();
         _serverVersion.Text = plan.ServerVersion.ToString();
         _sourceLabel.Text = $"{plan.ServerHost}:{plan.ServerPort} -> {plan.PatchBaseUrl}";
-        _fileGrid.Rows.Clear();
-        foreach (var item in plan.Items)
-        {
-            var state = item.State switch
-            {
-                KartPatchFileState.Unchanged => "已是最新",
-                KartPatchFileState.Missing => "缺少",
-                _ => "需更新"
-            };
-            var row = _fileGrid.Rows.Add(state, item.File.RelativePath, FormatSize(item.LocalSize), FormatSize(item.File.Size), $"0x{item.File.Crc:X8}");
-            if (item.NeedsUpdate)
-                _fileGrid.Rows[row].DefaultCellStyle.ForeColor = Color.FromArgb(156, 88, 0);
-        }
+        _fileGrid.CurrentCell = null;
+        _fileGrid.RowCount = 0;
+        _displayedItems = plan.Items;
+        _fileGrid.RowCount = _displayedItems.Count;
 
         var changed = plan.Changes.Count;
         var regionName = KartRegionCatalog.Get(plan.Region).DisplayName;
