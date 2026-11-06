@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../RhoViewerPortable/UiPerformanceHelpers.cs" Link="UiPerformanceHelpers.cs" />
+    <Compile Include="../RhoViewerPortable.Tests/UiPerformanceHelperTests.cs" Link="UiPerformanceHelperTests.cs" />
+    <Compile Include="../RhoViewerPortable/WindowsFileNameRules.cs" Link="WindowsFileNameRules.cs" />
+    <Compile Include="../RhoViewerPortable/KartPatchPathRules.cs" Link="KartPatchPathRules.cs" />
+    <Compile Include="../RhoViewerPortable/PlaybackTempCleanupPolicy.cs" Link="PlaybackTempCleanupPolicy.cs" />
+    <Compile Include="../RhoViewerPortable.Tests/LowFixPortableTests.cs" Link="LowFixPortableTests.cs" />
+  </ItemGroup>
+</Project>
