@@ -438,9 +438,12 @@ namespace KartLibrary.File
                 throw new Exception("index not exist.");
             RhoDataInfo dataInfo = _dataInfoMap[dataIndex];
 
+            if (_rhoStream is null || !_rhoStream.CanRead)
+                throw new InvalidOperationException("Rho archive is not open.");
             ArchiveReadLimits.ValidateResourceSizes(dataInfo.DataSize, dataInfo.UncompressedSize, $"Rho (index 0x{dataIndex:X8})");
 
             using FileStream dataStream = new FileStream(_rhoStream.Name, FileMode.Open, FileAccess.Read, FileShare.Read);
+            ArchiveReadLimits.ValidateDataRange(dataStream, dataInfo.Offset, dataInfo.DataSize, $"Rho (index 0x{dataIndex:X8})");
             dataStream.Seek(dataInfo.Offset, SeekOrigin.Begin);
             byte[] outData = new byte[dataInfo.DataSize];
             ReadExactly(dataStream, outData, 0, outData.Length);
@@ -473,6 +476,9 @@ namespace KartLibrary.File
                 if(secDatainfo is not null)
                 {
                     var combinedLength = ValidatePartialEncryptedLength(outData.Length, secDatainfo.DataSize);
+                    ArchiveReadLimits.ValidateDataRange(dataStream, secDatainfo.Offset, secDatainfo.DataSize, $"Rho secondary block (index 0x{secDatainfo.Index:X8})");
+                    if (secDatainfo.Offset != dataInfo.Offset + dataInfo.DataSize)
+                        throw new InvalidDataException("Rho partial-encrypted secondary block is not contiguous with its primary block.");
                     Array.Resize(ref outData, combinedLength);
                     ReadExactly(dataStream, outData, dataInfo.DataSize, secDatainfo.DataSize);
                 }

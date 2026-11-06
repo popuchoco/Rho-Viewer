@@ -23,6 +23,7 @@ internal static class HighFixRegressionTests
         TestArchiveHeaderCountsAndTextLengthsAreBounded();
         TestRhoFolderTraversalIsBounded();
         TestStoredResourceSizesAreBounded();
+        TestArchiveDataRangesAreBounded();
         TestFailedArchiveOpenDisposesStreams();
         TestKsvInnerLengthsAreBounded();
         TestUpdaterTrustBoundaries();
@@ -219,6 +220,15 @@ internal static class HighFixRegressionTests
         ArchiveReadLimits.ValidateResourceSizes(ArchiveReadLimits.MaxResourceBytes, ArchiveReadLimits.MaxResourceBytes, "synthetic archive");
         ExpectInvalidData(() => ArchiveReadLimits.ValidateResourceSizes(ArchiveReadLimits.MaxResourceBytes + 1L, 1, "synthetic archive"), "oversized stored resource");
         ExpectInvalidData(() => ArchiveReadLimits.ValidateResourceSizes(1, ArchiveReadLimits.MaxResourceBytes + 1L, "synthetic archive"), "oversized decoded resource");
+    }
+
+    private static void TestArchiveDataRangesAreBounded()
+    {
+        using var stream = new MemoryStream(new byte[32]);
+        ArchiveReadLimits.ValidateDataRange(stream, 16, 16, "synthetic archive");
+        ExpectInvalidData(() => ArchiveReadLimits.ValidateDataRange(stream, 17, 16, "synthetic archive"), "Rho block range beyond tiny file");
+        ExpectInvalidData(() => ArchiveReadLimits.ValidateDataRange(stream, -1, 1, "synthetic archive"), "negative Rho block offset");
+        ExpectInvalidData(() => ArchiveReadLimits.ValidateDataRange(stream, 0, -1, "synthetic archive"), "negative Rho block size");
     }
 
     private static void TestFailedArchiveOpenDisposesStreams()

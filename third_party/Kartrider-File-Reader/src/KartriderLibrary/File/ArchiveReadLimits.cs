@@ -41,6 +41,12 @@ namespace KartLibrary.File
                 throw new InvalidDataException($"{description} resource size is outside the supported range.");
         }
 
+        internal static void ValidateDataRange(Stream stream, long offset, long size, string description)
+        {
+            if (offset < 0 || size < 0 || offset > stream.Length || size > stream.Length - offset)
+                throw new InvalidDataException($"{description} data is outside the archive's declared range.");
+        }
+
         internal static void ValidateTableFitsFile(long offset, int count, int minimumEntrySize, long fileLength, string description)
         {
             if (offset < 0 || count < 0 || minimumEntrySize <= 0)
