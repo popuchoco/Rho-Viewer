@@ -1272,8 +1272,11 @@ internal sealed class MainForm : Form
 
         if (item.Extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif")
         {
+            var dimensions = NonDdsImageHeaderReader.ReadDimensions(bytes, item.Extension);
             using var stream = new MemoryStream(bytes, writable: false);
             using var source = Image.FromStream(stream);
+            if (source.Width != dimensions.Width || source.Height != dimensions.Height)
+                throw new InvalidDataException("圖片解碼尺寸與檔案標頭不符。");
             var bitmap = new Bitmap(source);
             return new PreviewContent(
                 $"{item.Name}  ·  {source.Width} × {source.Height}  ·  {FormatSize(bytes.Length)}",

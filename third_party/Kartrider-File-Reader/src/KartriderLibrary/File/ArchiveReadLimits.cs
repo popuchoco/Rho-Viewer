@@ -9,6 +9,13 @@ namespace KartLibrary.File
         internal const int MaxEntryCount = 100_000;
         internal const int MaxFolderNodes = 100_000;
         internal const int MaxResourceBytes = 256 * 1024 * 1024;
+        internal const int MaxNullTerminatedTextLength = 1_048_576;
+
+        internal static void ValidateNullTerminatedTextLength(int currentLength, string description)
+        {
+            if (currentLength >= MaxNullTerminatedTextLength)
+                throw new InvalidDataException($"{description} exceeds the supported length.");
+        }
 
         internal static void ValidateEntryCount(int count, string description)
         {
