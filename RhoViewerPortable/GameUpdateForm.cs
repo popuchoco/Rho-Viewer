@@ -5,6 +5,7 @@ internal sealed class GameUpdateForm : Form
     private readonly AppSettings _currentSettings;
     private readonly TextBox _gameDirectory = new();
     private readonly ComboBox _regionCombo = new();
+    private readonly CheckBox _allowInsecureHttp = new();
     private readonly Label _regionMappingLabel = new();
     private readonly Label _clientVersion = new();
     private readonly Label _serverVersion = new();
@@ -58,7 +59,7 @@ internal sealed class GameUpdateForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 8,
+            RowCount = 9,
             Padding = new Padding(16),
             BackColor = BackColor
         };
@@ -66,6 +67,7 @@ internal sealed class GameUpdateForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
@@ -95,10 +97,20 @@ internal sealed class GameUpdateForm : Form
         root.Controls.Add(note, 0, 2);
 
         root.Controls.Add(BuildRegionRow(), 0, 3);
-        root.Controls.Add(BuildVersionPanel(), 0, 4);
+        _allowInsecureHttp.Text = "允許 HTTP 更新端點（不安全；每次檢查需明確勾選）";
+        _allowInsecureHttp.Dock = DockStyle.Fill;
+        _allowInsecureHttp.ForeColor = Color.FromArgb(145, 74, 28);
+        _allowInsecureHttp.CheckedChanged += (_, _) =>
+        {
+            _plan = null;
+            _summaryLabel.Text = "HTTP 設定已變更，請重新檢查更新。";
+            UpdateControls();
+        };
+        root.Controls.Add(_allowInsecureHttp, 0, 4);
+        root.Controls.Add(BuildVersionPanel(), 0, 5);
 
         ConfigureGrid();
-        root.Controls.Add(_fileGrid, 0, 5);
+        root.Controls.Add(_fileGrid, 0, 6);
 
         var summaryPanel = new TableLayoutPanel
         {
@@ -125,7 +137,7 @@ internal sealed class GameUpdateForm : Form
         _progressBar.Minimum = 0;
         _progressBar.Maximum = 100;
         summaryPanel.Controls.Add(_progressBar, 0, 2);
-        root.Controls.Add(summaryPanel, 0, 6);
+        root.Controls.Add(summaryPanel, 0, 7);
 
         var buttons = new FlowLayoutPanel
         {
@@ -155,7 +167,7 @@ internal sealed class GameUpdateForm : Form
         buttons.Controls.Add(_cancelButton);
         buttons.Controls.Add(_checkButton);
         buttons.Controls.Add(_applyButton);
-        root.Controls.Add(buttons, 0, 7);
+        root.Controls.Add(buttons, 0, 8);
 
         AcceptButton = _checkButton;
         CancelButton = close;
@@ -368,7 +380,7 @@ internal sealed class GameUpdateForm : Form
         {
             var service = new KartPatchService();
             var region = (_regionCombo.SelectedItem as KartRegionProfile)?.Region ?? KartUpdateRegion.Auto;
-            _plan = await service.BuildPlanAsync(_gameDirectory.Text, region, cts.Token);
+            _plan = await service.BuildPlanAsync(_gameDirectory.Text, region, cts.Token, _allowInsecureHttp.Checked);
             RenderPlan(_plan);
             AppLogger.Info("GameUpdateCheck", $"client={_plan.ClientVersion}; server={_plan.ServerVersion}; total={_plan.Items.Count}; changes={_plan.Changes.Count}");
         }
@@ -401,6 +413,8 @@ internal sealed class GameUpdateForm : Form
         var confirm = MessageBox.Show(
             this,
             $"即將更新 {_plan.Changes.Count:N0} 個遊戲檔案，並修改：\n{_plan.GameDirectory}\n\n" +
+            $"更新來源：{FormatEndpointForDisplay(_plan.PatchBaseUrl)}\nDiscovery：{_plan.ServerHost}:{_plan.ServerPort}\n" +
+            "Adler-32/CRC 校驗只用於偵測資料損壞，不能驗證發布者；請確認更新來源可信。\n\n" +
             "請先關閉 KartRider。原檔會先備份到 .RhoViewerUpdate\\backups。\n" +
             "目前只套用完整檔案，不執行 delta/Patcher.exe。確定要繼續嗎？",
             "確認更新遊戲檔案",
@@ -481,10 +495,17 @@ internal sealed class GameUpdateForm : Form
         _progressBar.Value = percentage;
     }
 
+    internal static string FormatEndpointForDisplay(string value)
+    {
+        var endpoint = new Uri(value, UriKind.Absolute);
+        return $"{endpoint.Scheme}://{endpoint.Host}:{endpoint.Port}";
+    }
+
     private void UpdateControls()
     {
         _gameDirectory.Enabled = !_running;
         _regionCombo.Enabled = !_running;
+        _allowInsecureHttp.Enabled = !_running;
         _checkButton.Enabled = !_running;
         _applyButton.Enabled = !_running && _plan is not null && _plan.Changes.Count > 0;
         _cancelButton.Visible = _operationCts is not null;
