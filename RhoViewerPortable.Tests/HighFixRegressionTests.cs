@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Text;
@@ -389,35 +390,144 @@ internal static class HighFixRegressionTests
         }
 
         var root = CreateTemporaryDirectory("L3DirectoryLease");
+        var heldDirectory = Path.Combine(root, "target");
+        var movedDirectory = Path.Combine(root, "target-moved");
+        WindowsDirectoryPathLease? lease = null;
+        var synchronization = new object();
+        var firstRenameFinished = false;
+        var continueAfterRelease = false;
+        var runRenameAfterRelease = false;
+        var renameBlocked = false;
+        var renameSucceededAfterRelease = false;
+        Exception? workerError = null;
+        var workerStarted = false;
+
         try
         {
-            var heldDirectory = Path.Combine(root, "target");
-            var movedDirectory = Path.Combine(root, "target-moved");
             Directory.CreateDirectory(heldDirectory);
-            using (WindowsDirectoryPathLease.Acquire(heldDirectory))
+            lease = WindowsDirectoryPathLease.Acquire(heldDirectory);
+            var worker = new Thread(() =>
             {
-                var renameBlocked = false;
                 try
                 {
-                    Directory.Move(heldDirectory, movedDirectory);
-                }
-                catch (IOException)
-                {
-                    renameBlocked = true;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    renameBlocked = true;
-                }
+                    try
+                    {
+                        Directory.Move(heldDirectory, movedDirectory);
+                    }
+                    catch (IOException)
+                    {
+                        renameBlocked = true;
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        renameBlocked = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        workerError = ex;
+                    }
 
-                Assert(renameBlocked, "the Windows directory lease did not block a directory rename while held");
+                    lock (synchronization)
+                    {
+                        firstRenameFinished = true;
+                        Monitor.PulseAll(synchronization);
+                        while (!continueAfterRelease)
+                            Monitor.Wait(synchronization);
+                    }
+
+                    if (runRenameAfterRelease)
+                    {
+                        try
+                        {
+                            Directory.Move(heldDirectory, movedDirectory);
+                            renameSucceededAfterRelease = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            workerError = ex;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    workerError ??= ex;
+                    lock (synchronization)
+                    {
+                        firstRenameFinished = true;
+                        Monitor.PulseAll(synchronization);
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        Directory.Delete(root, recursive: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        workerError ??= ex;
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "Windows directory lease test"
+            };
+
+            worker.Start();
+            workerStarted = true;
+
+            var timeout = TimeSpan.FromSeconds(10);
+            var stopwatch = Stopwatch.StartNew();
+            var firstRenameTimedOut = false;
+            lock (synchronization)
+            {
+                while (!firstRenameFinished)
+                {
+                    var remaining = timeout - stopwatch.Elapsed;
+                    if (remaining <= TimeSpan.Zero || !Monitor.Wait(synchronization, remaining))
+                    {
+                        firstRenameTimedOut = true;
+                        break;
+                    }
+                }
             }
 
-            Directory.Move(heldDirectory, movedDirectory);
+            lease.Dispose();
+            lease = null;
+            lock (synchronization)
+            {
+                runRenameAfterRelease = !firstRenameTimedOut && renameBlocked && workerError is null;
+                continueAfterRelease = true;
+                Monitor.PulseAll(synchronization);
+            }
+
+            var workerFinished = worker.Join(timeout);
+            if (firstRenameTimedOut)
+                throw new TimeoutException("The Windows directory rename did not finish within 10 seconds while the lease was held.");
+            if (!workerFinished)
+                throw new TimeoutException("The Windows directory rename did not finish within 10 seconds after lease release.");
+            if (workerError is not null)
+                throw new InvalidDataException("The Windows directory lease integration test failed.", workerError);
+
+            Assert(renameBlocked, "the Windows directory lease did not block a directory rename while held");
+            Assert(renameSucceededAfterRelease, "the Windows directory rename did not succeed after lease release");
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            lease?.Dispose();
+            if (workerStarted)
+            {
+                lock (synchronization)
+                {
+                    continueAfterRelease = true;
+                    Monitor.PulseAll(synchronization);
+                }
+            }
+            else
+            {
+                Directory.Delete(root, recursive: true);
+            }
         }
     }
 

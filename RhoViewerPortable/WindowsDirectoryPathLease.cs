@@ -5,10 +5,11 @@ using Microsoft.Win32.SafeHandles;
 namespace RhoViewerPortable;
 
 /// <summary>
-/// Holds each directory in a path chain open without FILE_SHARE_DELETE while updater
-/// path-based writes and moves run. On Windows this blocks ordinary rename/reparse
-/// replacement of the held directories. File.Move still resolves names by path, so
-/// this narrows the swap window rather than providing handle-relative atomic I/O;
+/// Holds directory components open while updater path-based writes and moves run.
+/// On Windows, omitting FILE_SHARE_DELETE for the target blocks ordinary target
+/// rename/reparse replacement; ancestors allow deletion sharing to avoid blocking
+/// unrelated parent and sibling operations. File.Move still resolves names by path,
+/// so this narrows the swap window rather than providing handle-relative atomic I/O;
 /// non-Windows filesystems receive reparse checks but no equivalent lease guarantee.
 /// </summary>
 internal sealed class WindowsDirectoryPathLease : IDisposable
@@ -19,6 +20,7 @@ internal sealed class WindowsDirectoryPathLease : IDisposable
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint ShareRead = 0x00000001;
     private const uint ShareWrite = 0x00000002;
+    private const uint ShareDelete = 0x00000004;
     private const uint ReparsePointAttribute = 0x00000400;
     private const uint DirectoryAttribute = 0x00000010;
 
@@ -43,14 +45,19 @@ internal sealed class WindowsDirectoryPathLease : IDisposable
             if (string.IsNullOrEmpty(root))
                 throw new InvalidDataException($"更新目錄沒有有效磁碟根目錄：{directoryPath}");
 
-            var currentPath = root;
-            AddDirectoryHandle(handles, currentPath);
             var remainder = fullPath[root.Length..];
-            foreach (var segment in remainder.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+            var segments = remainder.Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0)
+                return new WindowsDirectoryPathLease(handles);
+
+            var currentPath = root;
+            for (var index = 0; index < segments.Length; index++)
             {
-                currentPath = Path.Combine(currentPath, segment);
+                currentPath = Path.Combine(currentPath, segments[index]);
                 Directory.CreateDirectory(currentPath);
-                AddDirectoryHandle(handles, currentPath);
+                AddDirectoryHandle(handles, currentPath, isTarget: index == segments.Length - 1);
             }
 
             return new WindowsDirectoryPathLease(handles);
@@ -64,12 +71,15 @@ internal sealed class WindowsDirectoryPathLease : IDisposable
 
     public void Dispose() => DisposeHandles(_handles);
 
-    private static void AddDirectoryHandle(List<SafeFileHandle> handles, string path)
+    private static void AddDirectoryHandle(List<SafeFileHandle> handles, string path, bool isTarget)
     {
         var handle = CreateFileW(
             path,
             FileReadAttributes,
-            ShareRead | ShareWrite,
+            // Keep ancestors renameable for unrelated siblings; an ancestor rename can
+            // still redirect path-based I/O, since this is not handle-relative atomicity.
+            // Omit delete sharing only for the target to block its rename while leased.
+            ShareRead | ShareWrite | (isTarget ? 0 : ShareDelete),
             IntPtr.Zero,
             OpenExisting,
             FileFlagBackupSemantics | FileFlagOpenReparsePoint,
