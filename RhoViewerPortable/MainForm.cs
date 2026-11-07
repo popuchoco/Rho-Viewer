@@ -55,6 +55,7 @@ internal sealed class MainForm : Form
     private Bitmap? _currentBitmap;
     private int _previewGeneration;
     private int _resourceTreeGeneration;
+    private bool? _resourceTreeNodesCreatedOnUiThread;
     private bool _busy;
     private bool _archiveClearInProgress;
     private bool _closeDrainStarted;
@@ -108,7 +109,7 @@ internal sealed class MainForm : Form
         _gameUpdateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
         _gameUpdateButton.AutoSize = true;
         _gameUpdateButton.Padding = new Padding(7, 4, 7, 4);
-        _gameUpdateButton.ToolTipText = "只選擇遊戲目錄，從 KartRider.pin 自動檢查並更新遊戲檔案";
+        _gameUpdateButton.ToolTipText = "選擇 KartRider.pin，從該檔所在目錄檢查並更新遊戲檔案";
         _gameUpdateButton.Click += (_, _) => ShowGameUpdate();
         _toolStrip.Items.Add(_gameUpdateButton);
         _toolStrip.Items.Add(CreateToolButton("＋ 選擇 Rho 檔案", async (_, _) => await ChooseFilesAsync()));
@@ -736,13 +737,7 @@ internal sealed class MainForm : Form
         if (_busy)
             return;
 
-        using var dialog = new FolderBrowserDialog
-        {
-            Description = "選擇要掃描 .rho、.rho5 與 .lpk 封包的資料夾（包含子資料夾）",
-            UseDescriptionForTitle = true,
-            ShowNewFolderButton = false,
-            SelectedPath = Directory.Exists(_settings.RhoDirectory) ? _settings.RhoDirectory : string.Empty
-        };
+        using var dialog = CreateRhoDirectoryDialog();
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -1023,22 +1018,20 @@ internal sealed class MainForm : Form
 
         try
         {
-            // The snapshot and detached TreeNodes are built away from the UI.
-            // Only the live TreeView is touched after this await, which resumes
-            // on the WinForms synchronization context captured here.
-            var root = await Task.Run(() =>
-            {
-                var snapshot = FolderTreeBuilder.Build(
-                    selectedArchive is null ? "全部封包" : selectedArchive.DisplayName,
-                    selectedArchive,
-                    sources,
-                    static (context, path) => new ResourceTreeNodeTag(context, path),
-                    cancellationSource.Token);
-                return CreateDetachedTreeNodes(snapshot, cancellationSource.Token);
-            }, cancellationSource.Token);
+            // Folder paths are plain data and can be grouped off the UI thread.
+            // TreeNode is a WinForms object. M5 created those nodes inside Task.Run;
+            // create them only after this await resumes on the UI synchronization context.
+            var snapshot = await Task.Run(() => FolderTreeBuilder.Build(
+                selectedArchive is null ? "全部封包" : selectedArchive.DisplayName,
+                selectedArchive,
+                sources,
+                static (context, path) => new ResourceTreeNodeTag(context, path),
+                cancellationSource.Token), cancellationSource.Token);
 
             if (cancellationSource.IsCancellationRequested || generation != _resourceTreeGeneration || IsDisposed || _closeDrainStarted)
                 return;
+
+            var root = CreateDetachedTreeNodes(snapshot, cancellationSource.Token);
 
             using var treeUpdate = _uiMutations.Enter(UiMutationKind.ResourceTreeRebuild);
             _resourceTree.BeginUpdate();
@@ -1056,6 +1049,8 @@ internal sealed class MainForm : Form
             {
                 _resourceTree.EndUpdate();
             }
+
+            _resourceTreeNodesCreatedOnUiThread = IsHandleCreated && !InvokeRequired;
         }
         catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
         {
@@ -1962,11 +1957,29 @@ internal sealed class MainForm : Form
         _currentBitmap = null;
     }
 
+    internal FolderBrowserDialog CreateRhoDirectoryDialog() => LocationDialogs.CreateRhoDirectoryDialog(_settings.RhoDirectory);
+    internal bool? ResourceTreeNodesCreatedOnUiThread => _resourceTreeNodesCreatedOnUiThread;
+    internal void RequestResourceTreeRefreshForTests() => RefreshResourceTree();
+    internal void AllowCloseForTests() => _allowClose = true;
+    internal bool IsBusyForTests => _busy;
+    internal void SetBusyForTests(bool busy, string status) => SetBusy(busy, status);
+    internal Cursor ResourceGridCursor => _fileGrid.Cursor;
+    internal int ResourceGridRowCount => _fileGrid.RowCount;
+    internal bool ResourceGridColumnsAreUnsorted =>
+        _fileGrid.Columns.Cast<DataGridViewColumn>().All(column => column.SortMode == DataGridViewColumnSortMode.NotSortable);
+
     private void SetBusy(bool busy, string status)
     {
         _busy = busy;
         _statusLabel.Text = status;
         UseWaitCursor = busy;
+        if (!busy)
+        {
+            // The virtual grid paints during EndUpdate while the wait cursor is on.
+            // Clear that cursor explicitly so the DataGridView does not keep it.
+            Cursor = Cursors.Default;
+            _fileGrid.Cursor = Cursors.Default;
+        }
         UpdateButtons();
     }
 
