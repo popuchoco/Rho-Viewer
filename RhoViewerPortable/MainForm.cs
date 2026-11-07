@@ -55,7 +55,10 @@ internal sealed class MainForm : Form
     private Bitmap? _currentBitmap;
     private int _previewGeneration;
     private int _resourceTreeGeneration;
-    private bool? _resourceTreeNodesCreatedOnUiThread;
+    private readonly object _resourceTreeLogGate = new();
+    private readonly StringBuilder _resourceTreeLog = new();
+    private int _resourceTreeOutcomeGeneration = -1;
+    private string _resourceTreeOutcome = "not-started";
     private bool _busy;
     private bool _archiveClearInProgress;
     private bool _closeDrainStarted;
@@ -999,7 +1002,10 @@ internal sealed class MainForm : Form
     private async Task RefreshResourceTreeAsync()
     {
         if (IsDisposed || _closeDrainStarted)
+        {
+            NoteResourceTree(_resourceTreeGeneration, $"skipped-entry disposed={IsDisposed} closeDrain={_closeDrainStarted}");
             return;
+        }
 
         var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context;
         var contexts = selectedArchive is null
@@ -1015,23 +1021,46 @@ internal sealed class MainForm : Form
         var previous = _resourceTreeBuildCts;
         _resourceTreeBuildCts = cancellationSource;
         previous?.Cancel();
+        NoteResourceTree(generation, "entered");
 
         try
         {
-            // Folder paths are plain data and can be grouped off the UI thread.
-            // TreeNode is a WinForms object. M5 created those nodes inside Task.Run;
-            // create them only after this await resumes on the UI synchronization context.
-            var snapshot = await Task.Run(() => FolderTreeBuilder.Build(
-                selectedArchive is null ? "全部封包" : selectedArchive.DisplayName,
-                selectedArchive,
-                sources,
-                static (context, path) => new ResourceTreeNodeTag(context, path),
-                cancellationSource.Token), cancellationSource.Token);
-
-            if (cancellationSource.IsCancellationRequested || generation != _resourceTreeGeneration || IsDisposed || _closeDrainStarted)
+            if (IsDisposed || _closeDrainStarted)
+            {
+                NoteResourceTree(generation, $"exit-before-await disposed={IsDisposed} closeDrain={_closeDrainStarted}");
                 return;
+            }
 
-            var root = CreateDetachedTreeNodes(snapshot, cancellationSource.Token);
+            NoteResourceTree(generation, "awaiting-snapshot");
+            // Same split as M5: the folder snapshot and detached TreeNodes are built
+            // off the UI thread. TreeNode has no window handle until it is attached.
+            var root = await Task.Run(() =>
+            {
+                var snapshot = FolderTreeBuilder.Build(
+                    selectedArchive is null ? "全部封包" : selectedArchive.DisplayName,
+                    selectedArchive,
+                    sources,
+                    static (context, path) => new ResourceTreeNodeTag(context, path),
+                    cancellationSource.Token);
+                return CreateDetachedTreeNodes(snapshot, cancellationSource.Token);
+            }, cancellationSource.Token);
+
+            NoteResourceTree(generation, "resumed-after-await");
+            if (cancellationSource.IsCancellationRequested)
+            {
+                NoteResourceTree(generation, "exit-after-await canceled");
+                return;
+            }
+            if (generation != _resourceTreeGeneration)
+            {
+                NoteResourceTree(generation, "exit-after-await stale-generation");
+                return;
+            }
+            if (IsDisposed || _closeDrainStarted)
+            {
+                NoteResourceTree(generation, $"exit-after-await disposed={IsDisposed} closeDrain={_closeDrainStarted}");
+                return;
+            }
 
             using var treeUpdate = _uiMutations.Enter(UiMutationKind.ResourceTreeRebuild);
             _resourceTree.BeginUpdate();
@@ -1050,13 +1079,15 @@ internal sealed class MainForm : Form
                 _resourceTree.EndUpdate();
             }
 
-            _resourceTreeNodesCreatedOnUiThread = IsHandleCreated && !InvokeRequired;
+            NoteResourceTree(generation, $"attached nodes={_resourceTree.Nodes.Count}");
         }
         catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
         {
+            NoteResourceTree(generation, "canceled");
         }
         catch (Exception ex)
         {
+            NoteResourceTree(generation, "failed " + ex);
             AppLogger.Error("ResourceTree", "failed to build folder tree", ex);
         }
         finally
@@ -1064,6 +1095,18 @@ internal sealed class MainForm : Form
             if (ReferenceEquals(_resourceTreeBuildCts, cancellationSource))
                 _resourceTreeBuildCts = null;
             cancellationSource.Dispose();
+        }
+    }
+
+    private void NoteResourceTree(int generation, string outcome)
+    {
+        var line = $"g{generation} tid={Environment.CurrentManagedThreadId} invokeRequired={(IsHandleCreated && InvokeRequired)} {outcome}";
+        lock (_resourceTreeLogGate)
+            _resourceTreeLog.AppendLine(line);
+        if (generation >= _resourceTreeOutcomeGeneration)
+        {
+            _resourceTreeOutcomeGeneration = generation;
+            _resourceTreeOutcome = outcome;
         }
     }
 
@@ -1958,28 +2001,26 @@ internal sealed class MainForm : Form
     }
 
     internal FolderBrowserDialog CreateRhoDirectoryDialog() => LocationDialogs.CreateRhoDirectoryDialog(_settings.RhoDirectory);
-    internal bool? ResourceTreeNodesCreatedOnUiThread => _resourceTreeNodesCreatedOnUiThread;
-    internal void RequestResourceTreeRefreshForTests() => RefreshResourceTree();
+    internal string ResourceTreeOutcome => _resourceTreeOutcome;
+    internal string ResourceTreeLog
+    {
+        get
+        {
+            lock (_resourceTreeLogGate)
+                return _resourceTreeLog.ToString();
+        }
+    }
+    internal string StatusTextForTests => _statusLabel.Text;
     internal void AllowCloseForTests() => _allowClose = true;
     internal bool IsBusyForTests => _busy;
-    internal void SetBusyForTests(bool busy, string status) => SetBusy(busy, status);
-    internal Cursor ResourceGridCursor => _fileGrid.Cursor;
     internal int ResourceGridRowCount => _fileGrid.RowCount;
-    internal bool ResourceGridColumnsAreUnsorted =>
-        _fileGrid.Columns.Cast<DataGridViewColumn>().All(column => column.SortMode == DataGridViewColumnSortMode.NotSortable);
+    internal void SetResourceSearchForTests(string text) => _searchBox.Text = text;
 
     private void SetBusy(bool busy, string status)
     {
         _busy = busy;
         _statusLabel.Text = status;
         UseWaitCursor = busy;
-        if (!busy)
-        {
-            // The virtual grid paints during EndUpdate while the wait cursor is on.
-            // Clear that cursor explicitly so the DataGridView does not keep it.
-            Cursor = Cursors.Default;
-            _fileGrid.Cursor = Cursors.Default;
-        }
         UpdateButtons();
     }
 

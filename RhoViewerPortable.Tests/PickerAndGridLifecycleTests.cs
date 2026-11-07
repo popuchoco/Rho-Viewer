@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Text;
+using KartLibrary.File;
 using RhoViewerPortable;
 
 namespace RhoViewerPortable.Tests;
@@ -10,7 +12,7 @@ internal static class PickerAndGridLifecycleTests
         TestPinFileAndRhoFolderPickersStayDistinct();
         TestSelectedPinBecomesItsGameDirectory();
         TestShownUpdateGridStaysVirtualAndUnsorted();
-        TestShownResourceGridCompletesOnUiThread();
+        TestShownFormLoadsSyntheticArchive();
     }
 
     private static void TestPinFileAndRhoFolderPickersStayDistinct()
@@ -122,43 +124,141 @@ internal static class PickerAndGridLifecycleTests
         }
     }
 
-    private static void TestShownResourceGridCompletesOnUiThread()
+    private static void TestShownFormLoadsSyntheticArchive()
     {
-        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-        using var form = new MainForm();
-        form.Show();
+        const int fileCount = 3;
+        var root = Path.Combine(Path.GetTempPath(), "RhoViewerPortable.LoadLifecycle." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var rhoPath = Path.Combine(root, "synthetic.rho");
         try
         {
-            Application.DoEvents();
-            if (!form.ResourceGridColumnsAreUnsorted)
-                throw new InvalidOperationException("virtual resource grid columns must stay unsorted.");
+            WriteSyntheticRho(rhoPath);
 
-            form.RequestResourceTreeRefreshForTests();
-            PumpUntil(
-                () => form.ResourceTreeNodesCreatedOnUiThread.HasValue,
-                TimeSpan.FromSeconds(3),
-                "resource tree did not finish on the shown form");
-            if (form.ResourceTreeNodesCreatedOnUiThread != true)
-                throw new InvalidOperationException("resource tree nodes were created off the UI thread.");
+            using var form = new MainForm();
+            Exception? failure = null;
+            var handlerFinished = false;
+            var heartbeats = 0;
+            using var heartbeat = new System.Windows.Forms.Timer { Interval = 50 };
+            heartbeat.Tick += (_, _) => heartbeats++;
+            using var timeout = new System.Windows.Forms.Timer { Interval = 8000 };
+            timeout.Tick += (_, _) =>
+            {
+                timeout.Stop();
+                if (!handlerFinished)
+                {
+                    failure ??= new TimeoutException(
+                        "shown archive load did not finish." + Environment.NewLine +
+                        "status=" + form.StatusTextForTests + Environment.NewLine +
+                        "busy=" + form.IsBusyForTests + Environment.NewLine +
+                        "rows=" + form.ResourceGridRowCount + Environment.NewLine +
+                        "tree=" + form.ResourceTreeOutcome + Environment.NewLine +
+                        form.ResourceTreeLog);
+                }
+                form.AllowCloseForTests();
+                form.Close();
+            };
+            form.Shown += async (_, _) =>
+            {
+                try
+                {
+                    heartbeat.Start();
+                    var beatsBeforeLoad = heartbeats;
+                    await form.LoadPathsForSmokeAsync(new[] { rhoPath });
+                    var beatsAfterLoad = heartbeats;
+                    if (form.IsBusyForTests)
+                        throw new InvalidOperationException("LoadPathsAsync returned while the form was still busy." + Diagnose(form));
+                    if (form.ResourceGridRowCount != fileCount)
+                        throw new InvalidOperationException($"loaded grid row count was {form.ResourceGridRowCount}, expected {fileCount}." + Diagnose(form));
 
-            form.SetBusyForTests(true, "正在讀取 1 個封包…");
-            Application.DoEvents();
-            if (!form.IsBusyForTests)
-                throw new InvalidOperationException("resource load did not enter the busy state.");
+                    var deadline = DateTime.UtcNow.AddSeconds(3);
+                    while (DateTime.UtcNow < deadline &&
+                           !form.ResourceTreeOutcome.StartsWith("attached", StringComparison.Ordinal) &&
+                           !form.ResourceTreeOutcome.StartsWith("failed", StringComparison.Ordinal))
+                        await Task.Delay(50);
+                    if (!form.ResourceTreeOutcome.StartsWith("attached", StringComparison.Ordinal))
+                        throw new InvalidOperationException("resource tree did not attach." + Diagnose(form));
 
-            form.SetBusyForTests(false, "已載入 0 個封包、0 個資源");
-            PumpUntil(
-                () => !form.IsBusyForTests && form.ResourceGridCursor != Cursors.WaitCursor,
-                TimeSpan.FromSeconds(2),
-                "resource grid stayed busy after load completion");
-            if (form.ResourceGridRowCount != 0)
-                throw new InvalidOperationException("empty resource grid changed row count while clearing busy state.");
+                    var beatsAtAttach = heartbeats;
+                    await Task.Delay(200);
+                    if (heartbeats <= beatsAtAttach)
+                        throw new InvalidOperationException("UI heartbeat stopped after the archive load." + Diagnose(form));
+                    if (beatsAfterLoad < beatsBeforeLoad)
+                        throw new InvalidOperationException("UI heartbeat counter moved backwards." + Diagnose(form));
+
+                    form.SetResourceSearchForTests("readme");
+                    await Task.Delay(500);
+                    if (form.IsBusyForTests || form.ResourceGridRowCount != 1)
+                        throw new InvalidOperationException($"search filter did not narrow the shown grid (rows={form.ResourceGridRowCount}, busy={form.IsBusyForTests})." + Diagnose(form));
+
+                    form.SetResourceSearchForTests(string.Empty);
+                    await Task.Delay(500);
+                    if (form.IsBusyForTests || form.ResourceGridRowCount != fileCount)
+                        throw new InvalidOperationException($"clearing the search did not restore the shown grid (rows={form.ResourceGridRowCount}, busy={form.IsBusyForTests})." + Diagnose(form));
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+                finally
+                {
+                    handlerFinished = true;
+                    heartbeat.Stop();
+                    timeout.Stop();
+                    form.AllowCloseForTests();
+                    form.Close();
+                }
+            };
+
+            timeout.Start();
+            Application.Run(form);
+            if (failure is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
         finally
         {
-            form.AllowCloseForTests();
-            form.Close();
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
         }
+    }
+
+    private static string Diagnose(MainForm form)
+        => Environment.NewLine + "status=" + form.StatusTextForTests +
+           Environment.NewLine + "busy=" + form.IsBusyForTests +
+           Environment.NewLine + "rows=" + form.ResourceGridRowCount +
+           Environment.NewLine + "tree=" + form.ResourceTreeOutcome +
+           Environment.NewLine + form.ResourceTreeLog;
+
+    private static void WriteSyntheticRho(string rhoPath)
+    {
+        using var archive = new RhoArchive();
+        archive.RootFolder.AddFile(new RhoFile
+        {
+            Name = "readme.txt",
+            DataSource = new ByteArrayDataSource(Encoding.ASCII.GetBytes("readme")),
+            FileEncryptionProperty = RhoFileProperty.None
+        });
+        var folder = new RhoFolder { Name = "sound" };
+        folder.AddFile(new RhoFile
+        {
+            Name = "a.wav",
+            DataSource = new ByteArrayDataSource(new byte[] { 1, 2, 3, 4 }),
+            FileEncryptionProperty = RhoFileProperty.None
+        });
+        archive.RootFolder.AddFolder(folder);
+        var nested = new RhoFolder { Name = "extra" };
+        nested.AddFile(new RhoFile
+        {
+            Name = "item.bin",
+            DataSource = new ByteArrayDataSource(new byte[] { 9, 8, 7 }),
+            FileEncryptionProperty = RhoFileProperty.None
+        });
+        folder.AddFolder(nested);
+        archive.SaveTo(rhoPath);
     }
 
     private static void Pump(TimeSpan budget)
@@ -169,19 +269,6 @@ internal static class PickerAndGridLifecycleTests
             Application.DoEvents();
             Thread.Sleep(15);
         }
-    }
-
-    private static void PumpUntil(Func<bool> done, TimeSpan budget, string message)
-    {
-        var start = Stopwatch.StartNew();
-        while (!done() && start.Elapsed < budget)
-        {
-            Application.DoEvents();
-            Thread.Sleep(15);
-        }
-
-        if (!done())
-            throw new TimeoutException(message + ".");
     }
 
     private static void Expect<TException>(Action action, string description) where TException : Exception
