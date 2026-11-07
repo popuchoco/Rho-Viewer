@@ -37,6 +37,7 @@ internal static class Program
         failures += RunSuite("bounded preview byte-cache tests", PreviewByteCacheTests.Run);
         failures += RunSuite("language selection and config persistence tests", LanguagePersistenceTests.Run);
         failures += RunSuite("DDS decoding and malformed-input tests", DdsDecoderTests.Run);
+        failures += RunSuite("KartRider.pin file picker and shown virtual-grid lifecycle", PickerAndGridLifecycleTests.Run);
         Console.WriteLine(failures == 0 ? "ALL TEST SUITES PASSED" : $"TEST FAILURES: {failures}");
         return failures == 0 ? 0 : 1;
     }

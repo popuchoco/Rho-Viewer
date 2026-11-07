@@ -73,9 +73,9 @@ This tool does not grant permission to access, extract, analyze, modify, reprodu
 
 ### Game file update
 
-The **Update Game Files** screen is designed for a user who only wants to select the game directory:
+The **Update Game Files** screen asks for the game's `KartRider.pin` file. Rho package browsing remains a folder picker.
 
-1. Select the directory containing `KartRider.pin`.
+1. Select the `KartRider.pin` file. The updater uses the directory that contains that file.
 2. Select `Auto (from KartRider.pin)`, `Taiwan (TW)`, `Korea (KR)`, or `China (CN)`. The selected region maps to the patch server host and port used for discovery.
 3. The application reads the local pin information and contacts the mapped patch service.
 4. It reads the KartRider `NFO200` file list and compares local files using the Kart-specific CRC.
@@ -123,7 +123,7 @@ The update workflow is informed by the public [`brownsugar/kart-patcher`](https:
 2. Download `RhoViewerPortable_v0.4.0_win-x64.zip` from the [v0.4.0 release](https://github.com/popuchoco/Rho-Viewer/releases/tag/v0.4.0) and extract it.
 3. Run `RhoViewerPortable.exe`.
 4. Click Select Directory, Select Rho Files, or drag files into the window.
-5. To update game files, click **Update Game Files**, select the game directory containing `KartRider.pin`, click **Check for Updates**, review the preview, and confirm the update.
+5. To update game files, click **Update Game Files**, select the `KartRider.pin` file, click **Check for Updates**, review the preview, and confirm the update.
 
 The release package is framework-dependent. The application does not download the Runtime, RhoKey, players, sample data, or a copy of the game from GitHub or another website.
 

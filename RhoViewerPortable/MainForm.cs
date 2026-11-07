@@ -55,6 +55,10 @@ internal sealed class MainForm : Form
     private Bitmap? _currentBitmap;
     private int _previewGeneration;
     private int _resourceTreeGeneration;
+    private readonly object _resourceTreeLogGate = new();
+    private readonly StringBuilder _resourceTreeLog = new();
+    private int _resourceTreeOutcomeGeneration = -1;
+    private string _resourceTreeOutcome = "not-started";
     private bool _busy;
     private bool _archiveClearInProgress;
     private bool _closeDrainStarted;
@@ -108,7 +112,7 @@ internal sealed class MainForm : Form
         _gameUpdateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
         _gameUpdateButton.AutoSize = true;
         _gameUpdateButton.Padding = new Padding(7, 4, 7, 4);
-        _gameUpdateButton.ToolTipText = "只選擇遊戲目錄，從 KartRider.pin 自動檢查並更新遊戲檔案";
+        _gameUpdateButton.ToolTipText = "選擇 KartRider.pin，從該檔所在目錄檢查並更新遊戲檔案";
         _gameUpdateButton.Click += (_, _) => ShowGameUpdate();
         _toolStrip.Items.Add(_gameUpdateButton);
         _toolStrip.Items.Add(CreateToolButton("＋ 選擇 Rho 檔案", async (_, _) => await ChooseFilesAsync()));
@@ -736,13 +740,7 @@ internal sealed class MainForm : Form
         if (_busy)
             return;
 
-        using var dialog = new FolderBrowserDialog
-        {
-            Description = "選擇要掃描 .rho、.rho5 與 .lpk 封包的資料夾（包含子資料夾）",
-            UseDescriptionForTitle = true,
-            ShowNewFolderButton = false,
-            SelectedPath = Directory.Exists(_settings.RhoDirectory) ? _settings.RhoDirectory : string.Empty
-        };
+        using var dialog = CreateRhoDirectoryDialog();
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -1004,7 +1002,10 @@ internal sealed class MainForm : Form
     private async Task RefreshResourceTreeAsync()
     {
         if (IsDisposed || _closeDrainStarted)
+        {
+            NoteResourceTree(_resourceTreeGeneration, $"skipped-entry disposed={IsDisposed} closeDrain={_closeDrainStarted}");
             return;
+        }
 
         var selectedArchive = (_archiveList.SelectedItem as ArchiveListEntry)?.Context;
         var contexts = selectedArchive is null
@@ -1020,12 +1021,19 @@ internal sealed class MainForm : Form
         var previous = _resourceTreeBuildCts;
         _resourceTreeBuildCts = cancellationSource;
         previous?.Cancel();
+        NoteResourceTree(generation, "entered");
 
         try
         {
-            // The snapshot and detached TreeNodes are built away from the UI.
-            // Only the live TreeView is touched after this await, which resumes
-            // on the WinForms synchronization context captured here.
+            if (IsDisposed || _closeDrainStarted)
+            {
+                NoteResourceTree(generation, $"exit-before-await disposed={IsDisposed} closeDrain={_closeDrainStarted}");
+                return;
+            }
+
+            NoteResourceTree(generation, "awaiting-snapshot");
+            // Same split as M5: the folder snapshot and detached TreeNodes are built
+            // off the UI thread. TreeNode has no window handle until it is attached.
             var root = await Task.Run(() =>
             {
                 var snapshot = FolderTreeBuilder.Build(
@@ -1037,8 +1045,22 @@ internal sealed class MainForm : Form
                 return CreateDetachedTreeNodes(snapshot, cancellationSource.Token);
             }, cancellationSource.Token);
 
-            if (cancellationSource.IsCancellationRequested || generation != _resourceTreeGeneration || IsDisposed || _closeDrainStarted)
+            NoteResourceTree(generation, "resumed-after-await");
+            if (cancellationSource.IsCancellationRequested)
+            {
+                NoteResourceTree(generation, "exit-after-await canceled");
                 return;
+            }
+            if (generation != _resourceTreeGeneration)
+            {
+                NoteResourceTree(generation, "exit-after-await stale-generation");
+                return;
+            }
+            if (IsDisposed || _closeDrainStarted)
+            {
+                NoteResourceTree(generation, $"exit-after-await disposed={IsDisposed} closeDrain={_closeDrainStarted}");
+                return;
+            }
 
             using var treeUpdate = _uiMutations.Enter(UiMutationKind.ResourceTreeRebuild);
             _resourceTree.BeginUpdate();
@@ -1056,12 +1078,16 @@ internal sealed class MainForm : Form
             {
                 _resourceTree.EndUpdate();
             }
+
+            NoteResourceTree(generation, $"attached nodes={_resourceTree.Nodes.Count}");
         }
         catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
         {
+            NoteResourceTree(generation, "canceled");
         }
         catch (Exception ex)
         {
+            NoteResourceTree(generation, "failed " + ex);
             AppLogger.Error("ResourceTree", "failed to build folder tree", ex);
         }
         finally
@@ -1069,6 +1095,18 @@ internal sealed class MainForm : Form
             if (ReferenceEquals(_resourceTreeBuildCts, cancellationSource))
                 _resourceTreeBuildCts = null;
             cancellationSource.Dispose();
+        }
+    }
+
+    private void NoteResourceTree(int generation, string outcome)
+    {
+        var line = $"g{generation} tid={Environment.CurrentManagedThreadId} invokeRequired={(IsHandleCreated && InvokeRequired)} {outcome}";
+        lock (_resourceTreeLogGate)
+            _resourceTreeLog.AppendLine(line);
+        if (generation >= _resourceTreeOutcomeGeneration)
+        {
+            _resourceTreeOutcomeGeneration = generation;
+            _resourceTreeOutcome = outcome;
         }
     }
 
@@ -1961,6 +1999,22 @@ internal sealed class MainForm : Form
         _currentBitmap?.Dispose();
         _currentBitmap = null;
     }
+
+    internal FolderBrowserDialog CreateRhoDirectoryDialog() => LocationDialogs.CreateRhoDirectoryDialog(_settings.RhoDirectory);
+    internal string ResourceTreeOutcome => _resourceTreeOutcome;
+    internal string ResourceTreeLog
+    {
+        get
+        {
+            lock (_resourceTreeLogGate)
+                return _resourceTreeLog.ToString();
+        }
+    }
+    internal string StatusTextForTests => _statusLabel.Text;
+    internal void AllowCloseForTests() => _allowClose = true;
+    internal bool IsBusyForTests => _busy;
+    internal int ResourceGridRowCount => _fileGrid.RowCount;
+    internal void SetResourceSearchForTests(string text) => _searchBox.Text = text;
 
     private void SetBusy(bool busy, string status)
     {
