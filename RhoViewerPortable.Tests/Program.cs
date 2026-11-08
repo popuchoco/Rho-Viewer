@@ -16,10 +16,29 @@ internal static class Program
             return ArchiveCorpusTest.Run(args.Skip(1).ToArray());
         if (args.Length > 0 && string.Equals(args[0], "--bml-corpus", StringComparison.OrdinalIgnoreCase))
             return BmlCorpusTest.Run(args.Skip(1).ToArray());
+        if (args.Length > 0 && string.Equals(args[0], "--find-pin", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length != 2)
+            {
+                Console.Error.WriteLine("Usage: RhoViewerPortable.Tests --find-pin <gameDirectory>");
+                return 2;
+            }
+
+            try
+            {
+                Console.WriteLine(KartPatchDiscovery.FindPinFile(args[1]));
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 1;
+            }
+        }
 
         if (args.Length > 0)
         {
-            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests [--archive-corpus [--sha256] dataRoot [dataRoot ...] | --bml-corpus path [path ...]]");
+            Console.Error.WriteLine("Usage: RhoViewerPortable.Tests [--archive-corpus [--sha256] dataRoot [dataRoot ...] | --bml-corpus path [path ...] | --find-pin gameDirectory]");
             return 2;
         }
 

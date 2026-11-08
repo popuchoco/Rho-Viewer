@@ -30,6 +30,7 @@ internal static class HighFixRegressionTests
         TestRho5OffsetsUseLongRanges();
         TestKsvInnerLengthsAreBounded();
         TestUpdaterTrustBoundaries();
+        TestPinSearchFindsDirectAndNestedFiles();
         LowFixPortableTests.Run();
         TestUpdaterSharesWindowsFilenameValidation();
         TestWindowsApplyDirectoryLease();
@@ -74,7 +75,7 @@ internal static class HighFixRegressionTests
         }
     }
 
-    private static byte[] CreateSyntheticRhoFixture(byte[] payload)
+    internal static byte[] CreateSyntheticRhoFixture(byte[] payload)
     {
         const string archiveName = "synthetic";
         const string resourceName = "sample";
@@ -368,6 +369,46 @@ internal static class HighFixRegressionTests
 
         Assert(!KartPatchService.IsGloballyRoutableAddress(IPAddress.Parse("192.0.2.10")), "Documentation IPv4 block was accepted as globally routable.");
         Assert(!KartPatchService.IsGloballyRoutableAddress(IPAddress.Parse("2001:db8::1")), "Documentation IPv6 block was accepted as globally routable.");
+    }
+
+    private static void TestPinSearchFindsDirectAndNestedFiles()
+    {
+        var root = CreateTemporaryDirectory("KartRiderPinSearch");
+        try
+        {
+            var directPin = Path.Combine(root, "KartRider.pin");
+            var nestedDirectory = Path.Combine(root, "Client", "Config");
+            var nestedPin = Path.Combine(nestedDirectory, "KartRider.pin");
+            Directory.CreateDirectory(nestedDirectory);
+            File.WriteAllBytes(directPin, new byte[] { 1 });
+            File.WriteAllBytes(nestedPin, new byte[] { 2 });
+
+            Assert(
+                string.Equals(KartPatchDiscovery.FindPinFile(root), directPin, StringComparison.OrdinalIgnoreCase),
+                "PIN search should prefer KartRider.pin in the selected game root.");
+
+            File.Delete(directPin);
+            Assert(
+                string.Equals(KartPatchDiscovery.FindPinFile(root), nestedPin, StringComparison.OrdinalIgnoreCase),
+                "PIN search should find a nested KartRider.pin when it is not in the selected root.");
+
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            try
+            {
+                _ = KartPatchDiscovery.FindPinFile(root, cancelled.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            throw new InvalidDataException("PIN search should honor cancellation before traversing directories.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static void TestUpdaterSharesWindowsFilenameValidation()

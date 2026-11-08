@@ -11,7 +11,7 @@ internal static class UiPerformanceHelperTests
         await TestDebounceLatestRequestWinsAsync();
         TestIndexBasedSelectionInversion();
         TestFolderTreeSnapshotBuildAndCancellation();
-        await TestSupersededReadDoesNotHoldCommitGateAsync();
+        await TestArchiveReadsAreSerializedAndCanceledWaitersAreSkippedAsync();
     }
 
     private static async Task TestDebounceLatestRequestWinsAsync()
@@ -83,20 +83,33 @@ internal static class UiPerformanceHelperTests
         throw new InvalidDataException("folder tree builder should honor cancellation before scanning paths");
     }
 
-    private static async Task TestSupersededReadDoesNotHoldCommitGateAsync()
+    private static async Task TestArchiveReadsAreSerializedAndCanceledWaitersAreSkippedAsync()
     {
         using var gate = new SemaphoreSlim(1, 1);
         using var oldCancellation = new CancellationTokenSource();
+        using var queuedCancellation = new CancellationTokenSource();
         var oldReadStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseOldRead = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var latestReadStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeReads = 0;
+        var maximumActiveReads = 0;
         var oldCommitCount = 0;
 
         var oldWork = SupersededWorkGate.RunWorkThenCommitAsync(
             gate,
-            _ =>
+            async _ =>
             {
+                var active = Interlocked.Increment(ref activeReads);
+                UpdateMaximum(ref maximumActiveReads, active);
                 oldReadStarted.TrySetResult(true);
-                return releaseOldRead.Task;
+                try
+                {
+                    return await releaseOldRead.Task;
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeReads);
+                }
             },
             value =>
             {
@@ -106,30 +119,75 @@ internal static class UiPerformanceHelperTests
             oldCancellation.Token);
 
         await oldReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert(await gate.WaitAsync(TimeSpan.FromMilliseconds(100)), "a pending read must not hold the preview commit gate");
-        gate.Release();
 
-        var latest = await SupersededWorkGate.RunWorkThenCommitAsync(
+        var queuedWorkStarted = false;
+        var canceledWaiter = SupersededWorkGate.RunWorkThenCommitAsync(
             gate,
-            _ => Task.FromResult("latest"),
+            _ =>
+            {
+                queuedWorkStarted = true;
+                return Task.FromResult("must not run");
+            },
             value => value,
-            CancellationToken.None);
-        Assert(latest == "latest", "a newer preview should commit while an older read is still running");
+            queuedCancellation.Token);
+        queuedCancellation.Cancel();
+        try
+        {
+            await canceledWaiter;
+            throw new InvalidDataException("a canceled preview waiting for the archive read gate should not run");
+        }
+        catch (OperationCanceledException)
+        {
+            Assert(!queuedWorkStarted, "a canceled queued preview must be skipped before reading");
+        }
 
+        var latestReadCommitted = false;
+        var latestWork = SupersededWorkGate.RunWorkThenCommitAsync(
+            gate,
+            _ =>
+            {
+                var active = Interlocked.Increment(ref activeReads);
+                UpdateMaximum(ref maximumActiveReads, active);
+                latestReadStarted.TrySetResult(true);
+                Interlocked.Decrement(ref activeReads);
+                return Task.FromResult("latest");
+            },
+            value =>
+            {
+                latestReadCommitted = true;
+                return value;
+            },
+            CancellationToken.None);
+
+        await Task.Delay(100);
+        Assert(!latestReadStarted.Task.IsCompleted, "a newer preview must wait while the stale synchronous archive read is active");
         oldCancellation.Cancel();
         releaseOldRead.TrySetResult("stale");
         try
         {
             await oldWork;
+            throw new InvalidDataException("a superseded preview should discard its completed read");
         }
         catch (OperationCanceledException)
         {
             Assert(oldCommitCount == 0, "a superseded read must not commit stale preview bytes");
-            Assert(gate.CurrentCount == 1, "the gate must be released after latest and canceled work");
-            return;
         }
 
-        throw new InvalidDataException("superseded preview work should observe cancellation before commit");
+        var latest = await latestWork;
+        Assert(latest == "latest", "the latest preview should run after an older read releases the gate");
+        Assert(latestReadStarted.Task.IsCompleted && latestReadCommitted, "the latest preview must run and commit after the old read releases the gate");
+        Assert(maximumActiveReads == 1, "archive reads must never overlap");
+        Assert(gate.CurrentCount == 1, "the gate must be released after latest and canceled work");
+    }
+
+    private static void UpdateMaximum(ref int maximum, int value)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref maximum);
+            if (value <= current || Interlocked.CompareExchange(ref maximum, value, current) == current)
+                return;
+        }
     }
 
     private static void AssertRanges(IReadOnlyList<IndexRange> actual, params IndexRange[] expected)

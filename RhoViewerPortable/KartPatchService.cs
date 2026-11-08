@@ -801,8 +801,11 @@ internal static class KartPatchDiscovery
 
     public static async Task<KartPatchConnection> DiscoverAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken, bool allowInsecureHttp = false)
     {
-        var pinPath = FindPinFile(gameDirectory);
+        // Searching a selected install root can involve many nested directories.
+        // Keep it off the WinForms thread and let cancellation stop a stale check.
+        var pinPath = await Task.Run(() => FindPinFile(gameDirectory, cancellationToken), cancellationToken).ConfigureAwait(false);
         var pin = await ParsePinAsync(pinPath, cancellationToken).ConfigureAwait(false);
+        AppLogger.Info("KartPatchDiscovery", $"pinPath={pinPath}; clientVersion={pin.ClientVersion}; host={pin.Host}:{pin.Port}");
         var selectedProfile = KartRegionCatalog.Get(region);
         var host = region == KartUpdateRegion.Auto ? pin.Host : selectedProfile.Host;
         var port = region == KartUpdateRegion.Auto ? pin.Port : selectedProfile.Port;
@@ -826,17 +829,30 @@ internal static class KartPatchDiscovery
         return endpoint;
     }
 
-    private static string FindPinFile(string gameDirectory)
+    internal static string FindPinFile(string gameDirectory, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        gameDirectory = Path.GetFullPath(gameDirectory);
         var direct = Path.Combine(gameDirectory, "KartRider.pin");
         if (File.Exists(direct))
             return direct;
 
         try
         {
-            var nested = Directory.EnumerateFiles(gameDirectory, "KartRider.pin", SearchOption.AllDirectories).FirstOrDefault();
-            if (nested is not null)
-                return nested;
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+                MatchCasing = MatchCasing.CaseInsensitive,
+                ReturnSpecialDirectories = false
+            };
+            foreach (var candidate in Directory.EnumerateFiles(gameDirectory, "*", options))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.Equals(Path.GetFileName(candidate), "KartRider.pin", StringComparison.OrdinalIgnoreCase))
+                    return candidate;
+            }
         }
         catch (UnauthorizedAccessException ex)
         {

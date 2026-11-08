@@ -195,15 +195,16 @@ internal static class SupersededWorkGate
         ArgumentNullException.ThrowIfNull(work);
         ArgumentNullException.ThrowIfNull(commit);
 
-        // Work may be a synchronous archive read wrapped in Task.Run and may
-        // finish after cancellation. Keep it outside the gate so a newer
-        // preview or archive cleanup is never queued behind a stale read.
-        var result = await work(cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-
         await gate.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Archive readers share seekable streams and ReadBytes is synchronous.
+            // Hold the gate for the entire read, not just the cache commit: this
+            // bounds concurrent reads and prevents archive disposal while a stale
+            // preview is still using the shared stream. Cancellation can skip work
+            // before it starts and discard its result after the read completes.
+            var result = await work(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             return commit(result);
         }

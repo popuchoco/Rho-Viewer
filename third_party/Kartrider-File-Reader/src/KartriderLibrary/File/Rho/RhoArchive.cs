@@ -497,9 +497,13 @@ namespace KartLibrary.File
                 if(secDatainfo is not null)
                 {
                     var combinedLength = ValidatePartialEncryptedLength(outData.Length, secDatainfo.DataSize);
-                    ArchiveReadLimits.ValidateDataRange(dataStream, secDatainfo.Offset, secDatainfo.DataSize, $"Rho secondary block (index 0x{secDatainfo.Index:X8})");
-                    if (secDatainfo.Offset != dataInfo.Offset + dataInfo.DataSize)
-                        throw new InvalidDataException("Rho partial-encrypted secondary block is not contiguous with its primary block.");
+                    // Partial-encrypted resources are stored as a continuation
+                    // immediately after the primary payload. The secondary block's
+                    // metadata offset may point at an aligned location, so validate
+                    // the actual combined read range rather than requiring that
+                    // metadata offset to equal the byte immediately after the first
+                    // block (which rejects valid legacy archives).
+                    ArchiveReadLimits.ValidateDataRange(dataStream, dataInfo.Offset, combinedLength, $"Rho partial-encrypted resource (index 0x{dataIndex:X8})");
                     Array.Resize(ref outData, combinedLength);
                     ReadExactly(dataStream, outData, dataInfo.DataSize, secDatainfo.DataSize);
                 }

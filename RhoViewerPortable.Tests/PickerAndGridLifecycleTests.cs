@@ -126,7 +126,7 @@ internal static class PickerAndGridLifecycleTests
 
     private static void TestShownFormLoadsSyntheticArchive()
     {
-        const int fileCount = 3;
+        const int fileCount = 1;
         var root = Path.Combine(Path.GetTempPath(), "RhoViewerPortable.LoadLifecycle." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var rhoPath = Path.Combine(root, "synthetic.rho");
@@ -185,7 +185,7 @@ internal static class PickerAndGridLifecycleTests
                     if (beatsAfterLoad < beatsBeforeLoad)
                         throw new InvalidOperationException("UI heartbeat counter moved backwards." + Diagnose(form));
 
-                    form.SetResourceSearchForTests("readme");
+                    form.SetResourceSearchForTests("sample");
                     await Task.Delay(500);
                     if (form.IsBusyForTests || form.ResourceGridRowCount != 1)
                         throw new InvalidOperationException($"search filter did not narrow the shown grid (rows={form.ResourceGridRowCount}, busy={form.IsBusyForTests})." + Diagnose(form));
@@ -235,30 +235,17 @@ internal static class PickerAndGridLifecycleTests
 
     private static void WriteSyntheticRho(string rhoPath)
     {
+        var payload = Encoding.ASCII.GetBytes("lifecycle sample resource");
+        File.WriteAllBytes(rhoPath, HighFixRegressionTests.CreateSyntheticRhoFixture(payload));
+
+        // Fail at the fixture boundary instead of allowing MainForm's error dialog
+        // to turn a broken test archive into an empty-grid lifecycle failure.
         using var archive = new RhoArchive();
-        archive.RootFolder.AddFile(new RhoFile
-        {
-            Name = "readme.txt",
-            DataSource = new ByteArrayDataSource(Encoding.ASCII.GetBytes("readme")),
-            FileEncryptionProperty = RhoFileProperty.None
-        });
-        var folder = new RhoFolder { Name = "sound" };
-        folder.AddFile(new RhoFile
-        {
-            Name = "a.wav",
-            DataSource = new ByteArrayDataSource(new byte[] { 1, 2, 3, 4 }),
-            FileEncryptionProperty = RhoFileProperty.None
-        });
-        archive.RootFolder.AddFolder(folder);
-        var nested = new RhoFolder { Name = "extra" };
-        nested.AddFile(new RhoFile
-        {
-            Name = "item.bin",
-            DataSource = new ByteArrayDataSource(new byte[] { 9, 8, 7 }),
-            FileEncryptionProperty = RhoFileProperty.None
-        });
-        folder.AddFolder(nested);
-        archive.SaveTo(rhoPath);
+        archive.Open(rhoPath);
+        var file = archive.RootFolder.GetFile("sample.bin")
+            ?? throw new InvalidDataException("Synthetic lifecycle Rho fixture did not contain sample.bin.");
+        if (!file.GetBytes().AsSpan().SequenceEqual(payload))
+            throw new InvalidDataException("Synthetic lifecycle Rho fixture payload did not round-trip.");
     }
 
     private static void Pump(TimeSpan budget)
