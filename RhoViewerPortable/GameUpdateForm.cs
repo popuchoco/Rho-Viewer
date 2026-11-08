@@ -56,6 +56,25 @@ internal sealed class GameUpdateForm : Form
 
     internal bool IsUpdateGridVirtualized => _fileGrid.VirtualMode;
     internal int UpdateGridRowCount => _fileGrid.RowCount;
+    internal bool UpdateGridColumnsAreUnsorted =>
+        _fileGrid.Columns.Cast<DataGridViewColumn>().All(column => column.SortMode == DataGridViewColumnSortMode.NotSortable);
+    internal string GameDirectoryText => _gameDirectory.Text;
+    internal OpenFileDialog CreatePinFileDialog() => LocationDialogs.CreateKartRiderPinDialog(_gameDirectory.Text);
+
+    internal bool TryApplySelectedPin(string selectedPath, out string error)
+    {
+        try
+        {
+            _gameDirectory.Text = KartPatchService.ResolveGameDirectory(selectedPath);
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentException or DirectoryNotFoundException or InvalidOperationException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
 
     private void BuildLayout()
     {
@@ -92,7 +111,7 @@ internal sealed class GameUpdateForm : Form
 
         var note = new Label
         {
-            Text = "請選擇含有 KartRider.pin 的遊戲目錄。更新端點與版本會自動從遊戲檔案及更新服務取得。",
+            Text = "請選擇 KartRider.pin。遊戲目錄使用該檔所在的資料夾，更新端點與版本仍從遊戲檔案及更新服務取得。",
             Dock = DockStyle.Fill,
             ForeColor = Color.FromArgb(80, 91, 107),
             TextAlign = ContentAlignment.MiddleLeft,
@@ -210,7 +229,7 @@ internal sealed class GameUpdateForm : Form
 
         var browse = new Button
         {
-            Text = "選擇資料夾",
+            Text = "選擇 pin",
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 5, 0, 5),
             FlatStyle = FlatStyle.Flat,
@@ -220,15 +239,12 @@ internal sealed class GameUpdateForm : Form
         browse.FlatAppearance.BorderColor = Color.FromArgb(205, 214, 226);
         browse.Click += (_, _) =>
         {
-            using var dialog = new FolderBrowserDialog
-            {
-                Description = "選擇含有 KartRider.pin 的遊戲目錄",
-                UseDescriptionForTitle = true,
-                SelectedPath = Directory.Exists(_gameDirectory.Text) ? _gameDirectory.Text : string.Empty,
-                ShowNewFolderButton = false
-            };
-            if (dialog.ShowDialog(this) == DialogResult.OK)
-                _gameDirectory.Text = dialog.SelectedPath;
+            using var dialog = CreatePinFileDialog();
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            if (!TryApplySelectedPin(dialog.FileName, out var error))
+                MessageBox.Show(this, error, "無法使用這個 KartRider.pin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         };
         row.Controls.Add(browse, 2, 0);
         return row;
@@ -360,11 +376,11 @@ internal sealed class GameUpdateForm : Form
             Padding = new Padding(5, 0, 5, 0)
         };
         _fileGrid.AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(249, 251, 253) };
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "狀態", Name = "State", Width = 92 });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源路徑", Name = "Path", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 300 });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "本機大小", Name = "LocalSize", Width = 112 });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "更新大小", Name = "RemoteSize", Width = 112 });
-        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "CRC", Name = "Crc", Width = 108 });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "狀態", Name = "State", Width = 92, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "資源路徑", Name = "Path", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 300, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "本機大小", Name = "LocalSize", Width = 112, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "更新大小", Name = "RemoteSize", Width = 112, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _fileGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "CRC", Name = "Crc", Width = 108, SortMode = DataGridViewColumnSortMode.NotSortable });
         _fileGrid.CellValueNeeded += FileGrid_CellValueNeeded;
         _fileGrid.CellFormatting += FileGrid_CellFormatting;
     }

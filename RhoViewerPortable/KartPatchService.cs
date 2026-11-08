@@ -110,7 +110,7 @@ internal sealed class KartPatchService
 
     public async Task<KartPatchPlan> BuildPlanAsync(string gameDirectory, KartUpdateRegion region, CancellationToken cancellationToken = default, bool allowInsecureHttp = false)
     {
-        gameDirectory = NormalizeExistingDirectory(gameDirectory);
+        gameDirectory = ResolveGameDirectory(gameDirectory);
         var connection = await KartPatchDiscovery.DiscoverAsync(gameDirectory, region, cancellationToken, allowInsecureHttp).ConfigureAwait(false);
         var patchBaseUrl = CombineUrl(connection.PatchBaseUrl, connection.ServerVersion.ToString(), allowInsecureHttp);
         var manifestUrl = CombineUrl(patchBaseUrl, "files.nfo2", allowInsecureHttp);
@@ -503,11 +503,31 @@ internal sealed class KartPatchService
         return result;
     }
 
+    internal static string ResolveGameDirectory(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("請指定遊戲目錄或 KartRider.pin。", nameof(path));
+
+        var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')));
+        if (File.Exists(fullPath))
+        {
+            if (!string.Equals(Path.GetFileName(fullPath), LocationDialogs.PinFileName, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("請選擇 KartRider.pin，或選擇它所在的遊戲目錄。");
+
+            var directory = Path.GetDirectoryName(fullPath);
+            if (string.IsNullOrEmpty(directory))
+                throw new InvalidDataException("KartRider.pin 沒有上層遊戲目錄。");
+            fullPath = directory;
+        }
+
+        return NormalizeExistingDirectory(fullPath);
+    }
+
     private static string NormalizeExistingDirectory(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("請指定遊戲目錄。", nameof(path));
-        var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim()));
+        var fullPath = Path.GetFullPath(path);
         if (!Directory.Exists(fullPath))
             throw new DirectoryNotFoundException($"找不到遊戲目錄：{fullPath}");
         if (string.Equals(fullPath, Path.GetPathRoot(fullPath), StringComparison.OrdinalIgnoreCase))
